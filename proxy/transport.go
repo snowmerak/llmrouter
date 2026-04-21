@@ -92,10 +92,6 @@ func (r *unifiedStreamRewriter) Read(p []byte) (n int, err error) {
 			if formatErr == nil && formatted != nil {
 				r.buf.Write(formatted)
 			}
-		} else if parseErr == nil && chunk == nil {
-			if len(bytes.TrimSpace(line)) == 0 {
-				r.buf.Write([]byte("\n"))
-			}
 		}
 	}
 	if readErr != nil {
