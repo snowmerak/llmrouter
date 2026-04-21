@@ -9,8 +9,24 @@ import (
 )
 
 type AnthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"` // string or []AnthropicContentBlock
+}
+
+type AnthropicContentBlock struct {
+	Type      string                 `json:"type"`
+	Text      string                 `json:"text,omitempty"`
+	ID        string                 `json:"id,omitempty"`          // For tool_use
+	Name      string                 `json:"name,omitempty"`        // For tool_use
+	Input     map[string]interface{} `json:"input,omitempty"`       // For tool_use
+	ToolUseID string                 `json:"tool_use_id,omitempty"` // For tool_result
+	Content   interface{}            `json:"content,omitempty"`     // For tool_result
+}
+
+type AnthropicTool struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	InputSchema map[string]interface{} `json:"input_schema"`
 }
 
 type AnthropicRequest struct {
@@ -21,11 +37,16 @@ type AnthropicRequest struct {
 	Temperature *float64           `json:"temperature,omitempty"`
 	TopP        *float64           `json:"top_p,omitempty"`
 	Stream      bool               `json:"stream,omitempty"`
+	Tools       []AnthropicTool    `json:"tools,omitempty"`
+	ToolChoice  interface{}        `json:"tool_choice,omitempty"`
 }
 
 type AnthropicContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string                 `json:"type"`
+	Text  string                 `json:"text,omitempty"`
+	ID    string                 `json:"id,omitempty"`
+	Name  string                 `json:"name,omitempty"`
+	Input map[string]interface{} `json:"input,omitempty"`
 }
 
 type AnthropicResponse struct {
@@ -45,9 +66,12 @@ type StreamEvent struct {
 	} `json:"message,omitempty"`
 	// For content_block_delta
 	Delta *struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type        string `json:"type"`
+		Text        string `json:"text,omitempty"`
+		PartialJson string `json:"partial_json,omitempty"`
 	} `json:"delta,omitempty"`
+	// For content_block_start
+	ContentBlock *AnthropicContent `json:"content_block,omitempty"`
 }
 
 func FromUniversalRequest(req *schema.ChatRequest) ([]byte, error) {
@@ -64,21 +88,106 @@ func FromUniversalRequest(req *schema.ChatRequest) ([]byte, error) {
 		anthropicReq.MaxTokens = 4096 // Default max tokens for Anthropic
 	}
 
+	if len(req.Tools) > 0 {
+		for _, tool := range req.Tools {
+			if tool.Type == "function" {
+				anthropicReq.Tools = append(anthropicReq.Tools, AnthropicTool{
+					Name:        tool.Function.Name,
+					Description: tool.Function.Description,
+					InputSchema: tool.Function.Parameters,
+				})
+			}
+		}
+	}
+
+	if req.ToolChoice != nil {
+		switch tc := req.ToolChoice.(type) {
+		case string:
+			if tc == "auto" {
+				anthropicReq.ToolChoice = map[string]string{"type": "auto"}
+			} else if tc == "required" {
+				anthropicReq.ToolChoice = map[string]string{"type": "any"}
+			}
+		case map[string]interface{}:
+			if f, ok := tc["function"].(map[string]interface{}); ok {
+				if name, ok := f["name"].(string); ok {
+					anthropicReq.ToolChoice = map[string]string{"type": "tool", "name": name}
+				}
+			}
+		}
+	}
+
 	for _, msg := range req.Messages {
-		if msg.Role == nil || msg.Content == nil {
+		if msg.Role == nil {
 			continue
 		}
 		if *msg.Role == schema.RoleSystem {
-			// Concatenate system prompts if there are multiple
-			if anthropicReq.System != "" {
-				anthropicReq.System += "\n\n"
+			if msg.Content != nil {
+				if anthropicReq.System != "" {
+					anthropicReq.System += "\n\n"
+				}
+				anthropicReq.System += *msg.Content
 			}
-			anthropicReq.System += *msg.Content
-		} else {
+		} else if *msg.Role == schema.RoleTool {
+			if msg.ToolCallID != nil && msg.Content != nil {
+				block := AnthropicContentBlock{
+					Type:      "tool_result",
+					ToolUseID: *msg.ToolCallID,
+					Content:   *msg.Content,
+				}
+				
+				// Try to merge with previous user message if it exists and is an array
+				merged := false
+				if len(anthropicReq.Messages) > 0 {
+					lastIdx := len(anthropicReq.Messages) - 1
+					lastMsg := anthropicReq.Messages[lastIdx]
+					if lastMsg.Role == "user" {
+						if blocks, ok := lastMsg.Content.([]AnthropicContentBlock); ok {
+							anthropicReq.Messages[lastIdx].Content = append(blocks, block)
+							merged = true
+						}
+					}
+				}
+				
+				if !merged {
+					anthropicReq.Messages = append(anthropicReq.Messages, AnthropicMessage{
+						Role:    "user",
+						Content: []AnthropicContentBlock{block},
+					})
+				}
+			}
+		} else if *msg.Role == schema.RoleAssistant && len(msg.ToolCalls) > 0 {
+			var blocks []AnthropicContentBlock
+			if msg.Content != nil && *msg.Content != "" {
+				blocks = append(blocks, AnthropicContentBlock{
+					Type: "text",
+					Text: *msg.Content,
+				})
+			}
+			for _, tc := range msg.ToolCalls {
+				var input map[string]interface{}
+				json.Unmarshal([]byte(tc.Function.Arguments), &input)
+				if input == nil {
+					input = make(map[string]interface{})
+				}
+				blocks = append(blocks, AnthropicContentBlock{
+					Type:  "tool_use",
+					ID:    tc.ID,
+					Name:  tc.Function.Name,
+					Input: input,
+				})
+			}
 			anthropicReq.Messages = append(anthropicReq.Messages, AnthropicMessage{
-				Role:    string(*msg.Role),
-				Content: *msg.Content,
+				Role:    "assistant",
+				Content: blocks,
 			})
+		} else {
+			if msg.Content != nil {
+				anthropicReq.Messages = append(anthropicReq.Messages, AnthropicMessage{
+					Role:    string(*msg.Role),
+					Content: *msg.Content,
+				})
+			}
 		}
 	}
 
@@ -109,10 +218,24 @@ func ToUniversalRequest(data []byte) (*schema.ChatRequest, error) {
 
 	for _, msg := range req.Messages {
 		role := schema.Role(msg.Role)
-		content := msg.Content
+		var contentStr string
+		switch c := msg.Content.(type) {
+		case string:
+			contentStr = c
+		case []interface{}:
+			for _, b := range c {
+				if bm, ok := b.(map[string]interface{}); ok {
+					if t, ok := bm["type"].(string); ok && t == "text" {
+						if text, ok := bm["text"].(string); ok {
+							contentStr += text
+						}
+					}
+				}
+			}
+		}
 		universalReq.Messages = append(universalReq.Messages, schema.Message{
 			Role:    &role,
-			Content: &content,
+			Content: &contentStr,
 		})
 	}
 
@@ -126,23 +249,41 @@ func ToUniversalResponse(data []byte) (*schema.ChatResponse, error) {
 	}
 
 	content := ""
+	var toolCalls []schema.UniversalToolCall
 	for _, block := range resp.Content {
 		if block.Type == "text" {
 			content += block.Text
+		} else if block.Type == "tool_use" {
+			args, _ := json.Marshal(block.Input)
+			toolCalls = append(toolCalls, schema.UniversalToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: schema.UniversalToolCallFunction{
+					Name:      block.Name,
+					Arguments: string(args),
+				},
+			})
 		}
 	}
 
 	role := schema.RoleAssistant
+	msg := schema.Message{
+		Role: &role,
+	}
+	if content != "" {
+		msg.Content = &content
+	}
+	if len(toolCalls) > 0 {
+		msg.ToolCalls = toolCalls
+	}
+
 	return &schema.ChatResponse{
 		ID:    resp.ID,
 		Model: resp.Model,
 		Choices: []schema.Choice{
 			{
-				Index: 0,
-				Message: schema.Message{
-					Role:    &role,
-					Content: &content,
-				},
+				Index:   0,
+				Message: msg,
 			},
 		},
 	}, nil
@@ -205,9 +346,8 @@ func ParseStreamChunk(line []byte, currentID, currentModel string) (*schema.Chat
 			},
 		}, currentID, currentModel, nil
 
-	case "content_block_delta":
-		if event.Delta != nil && event.Delta.Type == "text_delta" {
-			txt := event.Delta.Text
+	case "content_block_start":
+		if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
 			return &schema.ChatStreamChunk{
 				ID:    currentID,
 				Model: currentModel,
@@ -215,11 +355,58 @@ func ParseStreamChunk(line []byte, currentID, currentModel string) (*schema.Chat
 					{
 						Index: 0,
 						Delta: schema.Message{
-							Content: &txt,
+							ToolCalls: []schema.UniversalToolCall{
+								{
+									ID:   event.ContentBlock.ID,
+									Type: "function",
+									Function: schema.UniversalToolCallFunction{
+										Name: event.ContentBlock.Name,
+									},
+								},
+							},
 						},
 					},
 				},
 			}, currentID, currentModel, nil
+		}
+
+	case "content_block_delta":
+		if event.Delta != nil {
+			if event.Delta.Type == "text_delta" {
+				txt := event.Delta.Text
+				return &schema.ChatStreamChunk{
+					ID:    currentID,
+					Model: currentModel,
+					Choices: []schema.StreamChoice{
+						{
+							Index: 0,
+							Delta: schema.Message{
+								Content: &txt,
+							},
+						},
+					},
+				}, currentID, currentModel, nil
+			} else if event.Delta.Type == "input_json_delta" {
+				return &schema.ChatStreamChunk{
+					ID:    currentID,
+					Model: currentModel,
+					Choices: []schema.StreamChoice{
+						{
+							Index: 0,
+							Delta: schema.Message{
+								ToolCalls: []schema.UniversalToolCall{
+									{
+										Index: 0,
+										Function: schema.UniversalToolCallFunction{
+											Arguments: event.Delta.PartialJson,
+										},
+									},
+								},
+							},
+						},
+					},
+				}, currentID, currentModel, nil
+			}
 		}
 	}
 
