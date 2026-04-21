@@ -15,11 +15,11 @@ func main() {
 
 	// Mock OpenAI request payload
 	payload := map[string]interface{}{
-		"model": "super", // Will be translated to target_model by the router
+		"model": "light", // Will be translated to target_model by the router
 		"messages": []map[string]interface{}{
 			{
 				"role":    "user",
-				"content": "Hello, how are you?",
+				"content": "What is your name?",
 			},
 		},
 		"stream": true,
