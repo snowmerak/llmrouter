@@ -58,6 +58,7 @@ func (t *trackingReadCloser) Close() error {
 }
 
 type streamParser func(line []byte) (*schema.ChatStreamChunk, error)
+type streamFormatter func(chunk *schema.ChatStreamChunk, isEOF bool) ([]byte, error)
 
 type unifiedStreamRewriter struct {
 	originalBody  io.ReadCloser
@@ -68,6 +69,7 @@ type unifiedStreamRewriter struct {
 	originalModel string
 	sentDone      bool
 	parser        streamParser
+	formatter     streamFormatter
 }
 
 func (r *unifiedStreamRewriter) Read(p []byte) (n int, err error) {
@@ -86,8 +88,8 @@ func (r *unifiedStreamRewriter) Read(p []byte) (n int, err error) {
 			if chunk.Model == r.targetModel || chunk.Model == "" {
 				chunk.Model = r.originalModel
 			}
-			formatted, formatErr := openai.FormatStreamChunk(chunk)
-			if formatErr == nil {
+			formatted, formatErr := r.formatter(chunk, false)
+			if formatErr == nil && formatted != nil {
 				r.buf.Write(formatted)
 			}
 		} else if parseErr == nil && chunk == nil {
@@ -98,7 +100,10 @@ func (r *unifiedStreamRewriter) Read(p []byte) (n int, err error) {
 	}
 	if readErr != nil {
 		if readErr == io.EOF && !r.sentDone {
-			r.buf.Write([]byte("data: [DONE]\n\n"))
+			endBytes, _ := r.formatter(nil, true)
+			if endBytes != nil {
+				r.buf.Write(endBytes)
+			}
 			r.sentDone = true
 		}
 		r.err = readErr
@@ -194,12 +199,29 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 						strings.HasPrefix(req.URL.Path, "/api/version") || 
 						strings.HasPrefix(req.URL.Path, "/api/ps")
 
+	var frontendProtocol string
+	if strings.HasPrefix(req.URL.Path, "/v1/messages") {
+		frontendProtocol = "anthropic"
+	} else {
+		frontendProtocol = "openai" // default fallback
+	}
+
 	var requestedModel string
 	var universalReq *schema.ChatRequest
+
 	if len(bodyBytes) > 0 {
-		if req, err := openai.ToUniversalRequest(bodyBytes); err == nil && req.Model != "" {
-			universalReq = req
-			requestedModel = req.Model
+		var parsedReq *schema.ChatRequest
+		var err error
+
+		if frontendProtocol == "anthropic" {
+			parsedReq, err = anthropic.ToUniversalRequest(bodyBytes)
+		} else {
+			parsedReq, err = openai.ToUniversalRequest(bodyBytes)
+		}
+
+		if err == nil && parsedReq.Model != "" {
+			universalReq = parsedReq
+			requestedModel = parsedReq.Model
 		} else {
 			var payload map[string]interface{}
 			if err := json.Unmarshal(bodyBytes, &payload); err == nil {
@@ -300,39 +322,47 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		var originalModel string
 		attemptBodyBytes := bodyBytes
 
-		if node.protocol == "openai" && universalReq != nil && node.targetModel != "" {
+		if universalReq != nil {
 			originalModel = universalReq.Model
 			clonedReq := *universalReq // shallow copy
-			clonedReq.Model = node.targetModel
 
-			if newBody, err := openai.FromUniversalRequest(&clonedReq); err == nil {
+			if node.targetModel != "" {
+				clonedReq.Model = node.targetModel
+			}
+
+			var newBody []byte
+			var encodeErr error
+
+			if node.protocol == "anthropic" {
+				newBody, encodeErr = anthropic.FromUniversalRequest(&clonedReq)
+			} else {
+				// Default is openai
+				newBody, encodeErr = openai.FromUniversalRequest(&clonedReq)
+			}
+
+			if encodeErr == nil {
 				logLimit := len(newBody)
 				if logLimit > 150 {
 					logLimit = 150
 				}
-				log.Printf("[Proxy Rewrite Adapter] Changed request model '%s' -> '%s' (New Length: %d, Payload Front: %s...)", originalModel, node.targetModel, len(newBody), string(newBody[:logLimit]))
+				log.Printf("[Proxy Rewrite Adapter] Changed request model '%s' -> '%s' via %s adapter (New Length: %d, Payload Front: %s...)", originalModel, clonedReq.Model, node.protocol, len(newBody), string(newBody[:logLimit]))
 				attemptBodyBytes = newBody
 				attemptReq.ContentLength = int64(len(attemptBodyBytes))
 				attemptReq.Header.Set("Content-Length", strconv.Itoa(len(attemptBodyBytes)))
 			} else {
-				log.Printf("[Proxy Error] Failed to marshal updated payload via adapter: %v", err)
+				log.Printf("[Proxy Error] Failed to marshal updated payload via adapter: %v", encodeErr)
 			}
-		} else if node.protocol == "anthropic" && universalReq != nil {
-			originalModel = universalReq.Model
-			clonedReq := *universalReq
-			if node.targetModel != "" {
-				clonedReq.Model = node.targetModel
+			
+			if node.protocol == "anthropic" {
+				if node.apiKey != "" {
+					attemptReq.Header.Set("x-api-key", node.apiKey)
+				}
+				attemptReq.Header.Set("anthropic-version", "2023-06-01")
+				attemptReq.URL.Path = "/v1/messages"
+			} else if node.protocol == "openai" {
+				attemptReq.URL.Path = "/v1/chat/completions"
 			}
-			if newBody, err := anthropic.FromUniversalRequest(&clonedReq); err == nil {
-				attemptBodyBytes = newBody
-				attemptReq.ContentLength = int64(len(attemptBodyBytes))
-				attemptReq.Header.Set("Content-Length", strconv.Itoa(len(attemptBodyBytes)))
-			}
-			if node.apiKey != "" {
-				attemptReq.Header.Set("x-api-key", node.apiKey)
-			}
-			attemptReq.Header.Set("anthropic-version", "2023-06-01")
-			attemptReq.URL.Path = "/v1/messages"
+
 		} else if bodyBytes != nil && node.targetModel != "" {
 			var payload map[string]interface{}
 			if err := json.Unmarshal(bodyBytes, &payload); err == nil {
@@ -408,9 +438,10 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 				if isStreamResp {
 					var parser streamParser
+					var formatter streamFormatter
 
 					if node.protocol == "anthropic" {
-						log.Printf("[Proxy Rewrite Adapter] Activating Anthropic unified stream translator ('%s' -> '%s')", node.targetModel, originalModel)
+						log.Printf("[Proxy Rewrite Adapter] Activating Anthropic stream parser")
 						var currentID, currentModel string
 						parser = func(line []byte) (*schema.ChatStreamChunk, error) {
 							chunk, nextID, nextModel, err := anthropic.ParseStreamChunk(line, currentID, currentModel)
@@ -418,20 +449,27 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 							currentModel = nextModel
 							return chunk, err
 						}
-					} else if node.protocol == "openai" && originalModel != "" && node.targetModel != "" && originalModel != node.targetModel {
-						log.Printf("[Proxy Rewrite Adapter] Activating OpenAI unified stream rewriter ('%s' -> '%s')", node.targetModel, originalModel)
+					} else {
+						log.Printf("[Proxy Rewrite Adapter] Activating OpenAI stream parser")
 						parser = func(line []byte) (*schema.ChatStreamChunk, error) {
 							return openai.ParseStreamChunk(line)
 						}
 					}
 
-					if parser != nil {
+					if frontendProtocol == "anthropic" {
+						formatter = anthropic.FormatStreamChunk
+					} else {
+						formatter = openai.FormatStreamChunk
+					}
+
+					if parser != nil && formatter != nil {
 						finalBody = &unifiedStreamRewriter{
 							originalBody:  resp.Body,
 							reader:        bufio.NewReader(resp.Body),
 							targetModel:   node.targetModel,
 							originalModel: originalModel,
 							parser:        parser,
+							formatter:     formatter,
 						}
 					}
 				} else {
@@ -440,30 +478,37 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 						resp.Body.Close()
 
 						if err == nil {
+							var universalResp *schema.ChatResponse
+							
 							if node.protocol == "anthropic" {
-								log.Printf("[Proxy Rewrite Adapter] Activating Anthropic non-streaming unified translator ('%s' -> '%s')", node.targetModel, originalModel)
-								universalResp, err := anthropic.ToUniversalResponse(bodyBytes)
-								if err == nil && universalResp != nil {
-									if universalResp.Model == node.targetModel {
-										universalResp.Model = originalModel
-									}
-									if newBytes, err := json.Marshal(universalResp); err == nil {
-										finalBody = io.NopCloser(bytes.NewReader(newBytes))
-										resp.ContentLength = int64(len(newBytes))
-										resp.Header.Set("Content-Length", strconv.Itoa(len(newBytes)))
-									} else {
-										finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
-									}
+								log.Printf("[Proxy Rewrite Adapter] Activating Anthropic non-streaming parser")
+								universalResp, _ = anthropic.ToUniversalResponse(bodyBytes)
+							} else {
+								log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming parser")
+								universalResp, _ = openai.ToUniversalResponse(bodyBytes)
+							}
+
+							if universalResp != nil {
+								if universalResp.Model == node.targetModel {
+									universalResp.Model = originalModel
+								}
+								
+								var newBytes []byte
+								if frontendProtocol == "anthropic" {
+									newBytes, err = anthropic.FromUniversalResponse(universalResp)
+								} else {
+									newBytes, err = openai.FromUniversalResponse(universalResp)
+								}
+
+								if err == nil {
+									finalBody = io.NopCloser(bytes.NewReader(newBytes))
+									resp.ContentLength = int64(len(newBytes))
+									resp.Header.Set("Content-Length", strconv.Itoa(len(newBytes)))
 								} else {
 									finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
 								}
-							} else if node.protocol == "openai" {
-								log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming fast rewriter ('%s' -> '%s')", node.targetModel, originalModel)
-								replaced := bytes.Replace(bodyBytes, []byte(`"model":"`+node.targetModel+`"`), []byte(`"model":"`+originalModel+`"`), 1)
-								replaced = bytes.Replace(replaced, []byte(`"model": "`+node.targetModel+`"`), []byte(`"model": "`+originalModel+`"`), 1)
-								finalBody = io.NopCloser(bytes.NewReader(replaced))
-								resp.ContentLength = int64(len(replaced))
-								resp.Header.Set("Content-Length", strconv.Itoa(len(replaced)))
+							} else {
+								finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
 							}
 						} else {
 							finalBody = io.NopCloser(bytes.NewReader(bodyBytes))

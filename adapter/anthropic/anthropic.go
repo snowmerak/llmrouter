@@ -85,6 +85,40 @@ func FromUniversalRequest(req *schema.ChatRequest) ([]byte, error) {
 	return json.Marshal(anthropicReq)
 }
 
+func ToUniversalRequest(data []byte) (*schema.ChatRequest, error) {
+	var req AnthropicRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, err
+	}
+
+	universalReq := &schema.ChatRequest{
+		Model:       req.Model,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		Stream:      req.Stream,
+	}
+
+	if req.System != "" {
+		role := schema.RoleSystem
+		content := req.System
+		universalReq.Messages = append(universalReq.Messages, schema.Message{
+			Role:    &role,
+			Content: &content,
+		})
+	}
+
+	for _, msg := range req.Messages {
+		role := schema.Role(msg.Role)
+		content := msg.Content
+		universalReq.Messages = append(universalReq.Messages, schema.Message{
+			Role:    &role,
+			Content: &content,
+		})
+	}
+
+	return universalReq, nil
+}
+
 func ToUniversalResponse(data []byte) (*schema.ChatResponse, error) {
 	var resp AnthropicResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
@@ -112,6 +146,27 @@ func ToUniversalResponse(data []byte) (*schema.ChatResponse, error) {
 			},
 		},
 	}, nil
+}
+
+func FromUniversalResponse(resp *schema.ChatResponse) ([]byte, error) {
+	content := ""
+	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content != nil {
+		content = *resp.Choices[0].Message.Content
+	}
+	
+	anthropicResp := AnthropicResponse{
+		ID:    resp.ID,
+		Type:  "message",
+		Role:  "assistant",
+		Model: resp.Model,
+		Content: []AnthropicContent{
+			{
+				Type: "text",
+				Text: content,
+			},
+		},
+	}
+	return json.Marshal(anthropicResp)
 }
 
 // ParseStreamChunk reads an Anthropic stream chunk and maps it to a Universal (OpenAI-like) chunk.
@@ -170,4 +225,67 @@ func ParseStreamChunk(line []byte, currentID, currentModel string) (*schema.Chat
 
 	// Ignored events (ping, message_stop, content_block_stop, etc.)
 	return nil, currentID, currentModel, fmt.Errorf("ignored event type: %s", event.Type)
+}
+
+func FormatStreamChunk(chunk *schema.ChatStreamChunk, isEOF bool) ([]byte, error) {
+	if isEOF {
+		return []byte("event: message_stop\ndata: {\"type\": \"message_stop\"}\n\n"), nil
+	}
+	
+	if chunk == nil {
+		return nil, nil
+	}
+
+	if len(chunk.Choices) == 0 {
+		return nil, nil
+	}
+
+	delta := chunk.Choices[0].Delta
+	
+	if delta.Role != nil {
+		startEvent := map[string]interface{}{
+			"type": "message_start",
+			"message": map[string]interface{}{
+				"id": chunk.ID,
+				"type": "message",
+				"role": "assistant",
+				"model": chunk.Model,
+				"content": []interface{}{},
+			},
+		}
+		data1, _ := json.Marshal(startEvent)
+		res := append([]byte("event: message_start\ndata: "), data1...)
+		res = append(res, '\n', '\n')
+
+		blockStartEvent := map[string]interface{}{
+			"type": "content_block_start",
+			"index": 0,
+			"content_block": map[string]interface{}{
+				"type": "text",
+				"text": "",
+			},
+		}
+		data2, _ := json.Marshal(blockStartEvent)
+		res = append(res, []byte("event: content_block_start\ndata: ")...)
+		res = append(res, append(data2, '\n', '\n')...)
+		
+		return res, nil
+	}
+
+	if delta.Content != nil {
+		contentEvent := map[string]interface{}{
+			"type": "content_block_delta",
+			"index": 0,
+			"delta": map[string]interface{}{
+				"type": "text_delta",
+				"text": *delta.Content,
+			},
+		}
+		data, _ := json.Marshal(contentEvent)
+		res := append([]byte("event: content_block_delta\ndata: "), data...)
+		res = append(res, '\n', '\n')
+		return res, nil
+	}
+	
+	return nil, nil
 }

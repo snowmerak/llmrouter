@@ -24,6 +24,20 @@ func FromUniversalRequest(req *schema.ChatRequest) ([]byte, error) {
 	return json.Marshal(req)
 }
 
+// ToUniversalResponse parses an OpenAI JSON response into a Universal ChatResponse.
+func ToUniversalResponse(body []byte) (*schema.ChatResponse, error) {
+	var resp schema.ChatResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// FromUniversalResponse serializes a Universal ChatResponse into an OpenAI JSON response.
+func FromUniversalResponse(resp *schema.ChatResponse) ([]byte, error) {
+	return json.Marshal(resp)
+}
+
 // ParseStreamChunk reads an OpenAI SSE stream chunk (e.g. `data: {...}`) and maps it.
 func ParseStreamChunk(line []byte) (*schema.ChatStreamChunk, error) {
 	// The line usually starts with "data: "
@@ -41,7 +55,13 @@ func ParseStreamChunk(line []byte) (*schema.ChatStreamChunk, error) {
 }
 
 // FormatStreamChunk formats a Universal ChatStreamChunk into an OpenAI SSE string.
-func FormatStreamChunk(chunk *schema.ChatStreamChunk) ([]byte, error) {
+func FormatStreamChunk(chunk *schema.ChatStreamChunk, isEOF bool) ([]byte, error) {
+	if isEOF {
+		return []byte("data: [DONE]\n\n"), nil
+	}
+	if chunk == nil {
+		return nil, nil
+	}
 	data, err := json.Marshal(chunk)
 	if err != nil {
 		return nil, err
