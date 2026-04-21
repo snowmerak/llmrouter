@@ -57,84 +57,20 @@ func (t *trackingReadCloser) Close() error {
 	return nil
 }
 
-type responseRewriter struct {
-	originalBody  io.ReadCloser
-	reader        *bufio.Reader
-	buf           bytes.Buffer
-	targetModel   string
-	originalModel string
-	err           error
-	loggedPrefix  bool
-}
+type streamParser func(line []byte) (*schema.ChatStreamChunk, error)
 
-func (r *responseRewriter) Read(p []byte) (n int, err error) {
-	if r.buf.Len() > 0 {
-		return r.buf.Read(p)
-	}
-	if r.err != nil {
-		return 0, r.err
-	}
-
-	// Read ONE line to ensure we stream as soon as data arrives
-	line, readErr := r.reader.ReadBytes('\n')
-	if len(line) > 0 {
-		// Attempt to parse as an OpenAI stream chunk using adapter
-		chunk, parseErr := openai.ParseStreamChunk(line)
-		if parseErr == nil && chunk != nil {
-			// It is a valid stream chunk
-			if chunk.Model == r.targetModel {
-				chunk.Model = r.originalModel
-			}
-			formatted, formatErr := openai.FormatStreamChunk(chunk)
-			if formatErr == nil {
-				r.buf.Write(formatted)
-			} else {
-				r.buf.Write(line)
-			}
-		} else {
-			// Not a JSON chunk (could be [DONE], a normal JSON line for non-stream, or empty line)
-			// For non-streaming JSON responses or malformed chunks, fallback to byte replacement
-			replaced := bytes.Replace(line, []byte(`"model":"`+r.targetModel+`"`), []byte(`"model":"`+r.originalModel+`"`), 1)
-			replaced = bytes.Replace(replaced, []byte(`"model": "`+r.targetModel+`"`), []byte(`"model": "`+r.originalModel+`"`), 1)
-			r.buf.Write(replaced)
-		}
-
-		if !r.loggedPrefix {
-			logLimit := r.buf.Len()
-			if logLimit > 150 {
-				logLimit = 150
-			}
-			log.Printf("[Proxy Response Chunk] %s...", string(r.buf.Bytes()[:logLimit]))
-			r.loggedPrefix = true
-		}
-	}
-	if readErr != nil {
-		r.err = readErr
-	}
-
-	if r.buf.Len() > 0 {
-		return r.buf.Read(p)
-	}
-	return 0, r.err
-}
-
-func (r *responseRewriter) Close() error {
-	return r.originalBody.Close()
-}
-
-type anthropicStreamRewriter struct {
+type unifiedStreamRewriter struct {
 	originalBody  io.ReadCloser
 	reader        *bufio.Reader
 	buf           bytes.Buffer
 	err           error
-	currentID     string
-	currentModel  string
 	targetModel   string
 	originalModel string
 	sentDone      bool
+	parser        streamParser
 }
 
-func (r *anthropicStreamRewriter) Read(p []byte) (n int, err error) {
+func (r *unifiedStreamRewriter) Read(p []byte) (n int, err error) {
 	if r.buf.Len() > 0 {
 		return r.buf.Read(p)
 	}
@@ -144,9 +80,7 @@ func (r *anthropicStreamRewriter) Read(p []byte) (n int, err error) {
 
 	line, readErr := r.reader.ReadBytes('\n')
 	if len(line) > 0 {
-		chunk, nextID, nextModel, parseErr := anthropic.ParseStreamChunk(line, r.currentID, r.currentModel)
-		r.currentID = nextID
-		r.currentModel = nextModel
+		chunk, parseErr := r.parser(line)
 
 		if parseErr == nil && chunk != nil {
 			if chunk.Model == r.targetModel {
@@ -176,7 +110,7 @@ func (r *anthropicStreamRewriter) Read(p []byte) (n int, err error) {
 	return 0, r.err
 }
 
-func (r *anthropicStreamRewriter) Close() error {
+func (r *unifiedStreamRewriter) Close() error {
 	return r.originalBody.Close()
 }
 
@@ -466,23 +400,73 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 
 			if resp != nil && resp.Body != nil {
+				isStreamResp := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
+					req.Header.Get("Accept") == "text/event-stream" || attemptReq.Header.Get("Accept") == "text/event-stream"
+
 				var finalBody io.ReadCloser = resp.Body
 
-				if node.protocol == "anthropic" {
-					log.Printf("[Proxy Rewrite Adapter] Activating Anthropic stream translator ('%s' -> '%s')", node.targetModel, originalModel)
-					finalBody = &anthropicStreamRewriter{
-						originalBody:  resp.Body,
-						reader:        bufio.NewReader(resp.Body),
-						targetModel:   node.targetModel,
-						originalModel: originalModel,
+				if isStreamResp {
+					var parser streamParser
+
+					if node.protocol == "anthropic" {
+						log.Printf("[Proxy Rewrite Adapter] Activating Anthropic unified stream translator ('%s' -> '%s')", node.targetModel, originalModel)
+						var currentID, currentModel string
+						parser = func(line []byte) (*schema.ChatStreamChunk, error) {
+							chunk, nextID, nextModel, err := anthropic.ParseStreamChunk(line, currentID, currentModel)
+							currentID = nextID
+							currentModel = nextModel
+							return chunk, err
+						}
+					} else if node.protocol == "openai" && originalModel != "" && node.targetModel != "" && originalModel != node.targetModel {
+						log.Printf("[Proxy Rewrite Adapter] Activating OpenAI unified stream rewriter ('%s' -> '%s')", node.targetModel, originalModel)
+						parser = func(line []byte) (*schema.ChatStreamChunk, error) {
+							return openai.ParseStreamChunk(line)
+						}
 					}
-				} else if node.protocol == "openai" && originalModel != "" && node.targetModel != "" && originalModel != node.targetModel {
-					log.Printf("[Proxy Rewrite Adapter] Activating response stream rewriter ('%s' -> '%s')", node.targetModel, originalModel)
-					finalBody = &responseRewriter{
-						originalBody:  resp.Body,
-						reader:        bufio.NewReader(resp.Body),
-						targetModel:   node.targetModel,
-						originalModel: originalModel,
+
+					if parser != nil {
+						finalBody = &unifiedStreamRewriter{
+							originalBody:  resp.Body,
+							reader:        bufio.NewReader(resp.Body),
+							targetModel:   node.targetModel,
+							originalModel: originalModel,
+							parser:        parser,
+						}
+					}
+				} else {
+					if originalModel != "" && node.targetModel != "" {
+						bodyBytes, err := io.ReadAll(resp.Body)
+						resp.Body.Close()
+
+						if err == nil {
+							if node.protocol == "anthropic" {
+								log.Printf("[Proxy Rewrite Adapter] Activating Anthropic non-streaming unified translator ('%s' -> '%s')", node.targetModel, originalModel)
+								universalResp, err := anthropic.ToUniversalResponse(bodyBytes)
+								if err == nil && universalResp != nil {
+									if universalResp.Model == node.targetModel {
+										universalResp.Model = originalModel
+									}
+									if newBytes, err := json.Marshal(universalResp); err == nil {
+										finalBody = io.NopCloser(bytes.NewReader(newBytes))
+										resp.ContentLength = int64(len(newBytes))
+										resp.Header.Set("Content-Length", strconv.Itoa(len(newBytes)))
+									} else {
+										finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
+									}
+								} else {
+									finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
+								}
+							} else if node.protocol == "openai" {
+								log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming fast rewriter ('%s' -> '%s')", node.targetModel, originalModel)
+								replaced := bytes.Replace(bodyBytes, []byte(`"model":"`+node.targetModel+`"`), []byte(`"model":"`+originalModel+`"`), 1)
+								replaced = bytes.Replace(replaced, []byte(`"model": "`+node.targetModel+`"`), []byte(`"model": "`+originalModel+`"`), 1)
+								finalBody = io.NopCloser(bytes.NewReader(replaced))
+								resp.ContentLength = int64(len(replaced))
+								resp.Header.Set("Content-Length", strconv.Itoa(len(replaced)))
+							}
+						} else {
+							finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
+						}
 					}
 				}
 

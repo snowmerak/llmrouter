@@ -23,6 +23,19 @@ type AnthropicRequest struct {
 	Stream      bool               `json:"stream,omitempty"`
 }
 
+type AnthropicContent struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+type AnthropicResponse struct {
+	ID      string             `json:"id"`
+	Type    string             `json:"type"`
+	Role    string             `json:"role"`
+	Model   string             `json:"model"`
+	Content []AnthropicContent `json:"content"`
+}
+
 type StreamEvent struct {
 	Type  string `json:"type"`
 	// For message_start
@@ -70,6 +83,35 @@ func FromUniversalRequest(req *schema.ChatRequest) ([]byte, error) {
 	}
 
 	return json.Marshal(anthropicReq)
+}
+
+func ToUniversalResponse(data []byte) (*schema.ChatResponse, error) {
+	var resp AnthropicResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+
+	content := ""
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			content += block.Text
+		}
+	}
+
+	role := schema.RoleAssistant
+	return &schema.ChatResponse{
+		ID:    resp.ID,
+		Model: resp.Model,
+		Choices: []schema.Choice{
+			{
+				Index: 0,
+				Message: schema.Message{
+					Role:    &role,
+					Content: &content,
+				},
+			},
+		},
+	}, nil
 }
 
 // ParseStreamChunk reads an Anthropic stream chunk and maps it to a Universal (OpenAI-like) chunk.
