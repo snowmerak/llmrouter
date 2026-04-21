@@ -15,7 +15,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/snowmerak/llmrouter/adapter/openai"
 	"github.com/snowmerak/llmrouter/config"
+	"github.com/snowmerak/llmrouter/schema"
 
 	"github.com/sony/gobreaker"
 )
@@ -53,15 +55,13 @@ func (t *trackingReadCloser) Close() error {
 }
 
 type responseRewriter struct {
-	originalBody   io.ReadCloser
-	reader         *bufio.Reader
-	buf            bytes.Buffer
-	targetModel    []byte
-	originalModel  []byte
-	targetModelAlt []byte
-	originalModelAlt []byte
-	err            error
-	loggedPrefix   bool
+	originalBody  io.ReadCloser
+	reader        *bufio.Reader
+	buf           bytes.Buffer
+	targetModel   string
+	originalModel string
+	err           error
+	loggedPrefix  bool
 }
 
 func (r *responseRewriter) Read(p []byte) (n int, err error) {
@@ -72,19 +72,36 @@ func (r *responseRewriter) Read(p []byte) (n int, err error) {
 		return 0, r.err
 	}
 
-	// Read ONE line to ensure we stream as soon as data arrives (do not block for len(p) buffer size)
+	// Read ONE line to ensure we stream as soon as data arrives
 	line, readErr := r.reader.ReadBytes('\n')
 	if len(line) > 0 {
-		replaced := bytes.Replace(line, r.targetModel, r.originalModel, 1)
-		replaced = bytes.Replace(replaced, r.targetModelAlt, r.originalModelAlt, 1)
-		r.buf.Write(replaced)
+		// Attempt to parse as an OpenAI stream chunk using adapter
+		chunk, parseErr := openai.ParseStreamChunk(line)
+		if parseErr == nil && chunk != nil {
+			// It is a valid stream chunk
+			if chunk.Model == r.targetModel {
+				chunk.Model = r.originalModel
+			}
+			formatted, formatErr := openai.FormatStreamChunk(chunk)
+			if formatErr == nil {
+				r.buf.Write(formatted)
+			} else {
+				r.buf.Write(line)
+			}
+		} else {
+			// Not a JSON chunk (could be [DONE], a normal JSON line for non-stream, or empty line)
+			// For non-streaming JSON responses or malformed chunks, fallback to byte replacement
+			replaced := bytes.Replace(line, []byte(`"model":"`+r.targetModel+`"`), []byte(`"model":"`+r.originalModel+`"`), 1)
+			replaced = bytes.Replace(replaced, []byte(`"model": "`+r.targetModel+`"`), []byte(`"model": "`+r.originalModel+`"`), 1)
+			r.buf.Write(replaced)
+		}
 
 		if !r.loggedPrefix {
-			logLimit := len(replaced)
+			logLimit := r.buf.Len()
 			if logLimit > 150 {
 				logLimit = 150
 			}
-			log.Printf("[Proxy Response Chunk] %s...", string(replaced[:logLimit]))
+			log.Printf("[Proxy Response Chunk] %s...", string(r.buf.Bytes()[:logLimit]))
 			r.loggedPrefix = true
 		}
 	}
@@ -176,11 +193,17 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 						strings.HasPrefix(req.URL.Path, "/api/ps")
 
 	var requestedModel string
+	var universalReq *schema.ChatRequest
 	if len(bodyBytes) > 0 {
-		var payload map[string]interface{}
-		if err := json.Unmarshal(bodyBytes, &payload); err == nil {
-			if m, ok := payload["model"].(string); ok {
-				requestedModel = m
+		if req, err := openai.ToUniversalRequest(bodyBytes); err == nil && req.Model != "" {
+			universalReq = req
+			requestedModel = req.Model
+		} else {
+			var payload map[string]interface{}
+			if err := json.Unmarshal(bodyBytes, &payload); err == nil {
+				if m, ok := payload["model"].(string); ok {
+					requestedModel = m
+				}
 			}
 		}
 	}
@@ -274,7 +297,24 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		var originalModel string
 		attemptBodyBytes := bodyBytes
 
-		if bodyBytes != nil && node.targetModel != "" {
+		if universalReq != nil && node.targetModel != "" {
+			originalModel = universalReq.Model
+			clonedReq := *universalReq // shallow copy
+			clonedReq.Model = node.targetModel
+
+			if newBody, err := openai.FromUniversalRequest(&clonedReq); err == nil {
+				logLimit := len(newBody)
+				if logLimit > 150 {
+					logLimit = 150
+				}
+				log.Printf("[Proxy Rewrite Adapter] Changed request model '%s' -> '%s' (New Length: %d, Payload Front: %s...)", originalModel, node.targetModel, len(newBody), string(newBody[:logLimit]))
+				attemptBodyBytes = newBody
+				attemptReq.ContentLength = int64(len(attemptBodyBytes))
+				attemptReq.Header.Set("Content-Length", strconv.Itoa(len(attemptBodyBytes)))
+			} else {
+				log.Printf("[Proxy Error] Failed to marshal updated payload via adapter: %v", err)
+			}
+		} else if bodyBytes != nil && node.targetModel != "" {
 			var payload map[string]interface{}
 			if err := json.Unmarshal(bodyBytes, &payload); err == nil {
 				if m, ok := payload["model"].(string); ok {
@@ -285,7 +325,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 						if logLimit > 150 {
 							logLimit = 150
 						}
-						log.Printf("[Proxy Rewrite] Changed request model '%s' -> '%s' (New Length: %d, Payload Front: %s...)", originalModel, node.targetModel, len(newBody), string(newBody[:logLimit]))
+						log.Printf("[Proxy Rewrite Map] Changed request model '%s' -> '%s' (New Length: %d, Payload Front: %s...)", originalModel, node.targetModel, len(newBody), string(newBody[:logLimit]))
 						attemptBodyBytes = newBody
 						attemptReq.ContentLength = int64(len(attemptBodyBytes))
 						attemptReq.Header.Set("Content-Length", strconv.Itoa(len(attemptBodyBytes)))
@@ -346,14 +386,12 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 				// Inject response rewriter if we snapped the model
 				if originalModel != "" && node.targetModel != "" && originalModel != node.targetModel {
-					log.Printf("[Proxy Rewrite] Activating response stream rewriter ('%s' -> '%s')", node.targetModel, originalModel)
+					log.Printf("[Proxy Rewrite Adapter] Activating response stream rewriter ('%s' -> '%s')", node.targetModel, originalModel)
 					finalBody = &responseRewriter{
-						originalBody:     resp.Body,
-						reader:           bufio.NewReader(resp.Body),
-						targetModel:      []byte(`"model":"` + node.targetModel + `"`),
-						originalModel:    []byte(`"model":"` + originalModel + `"`),
-						targetModelAlt:   []byte(`"model": "` + node.targetModel + `"`),
-						originalModelAlt: []byte(`"model": "` + originalModel + `"`),
+						originalBody:  resp.Body,
+						reader:        bufio.NewReader(resp.Body),
+						targetModel:   node.targetModel,
+						originalModel: originalModel,
 					}
 				}
 
