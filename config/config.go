@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"regexp"
 
 	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v3"
@@ -47,6 +48,15 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	re := regexp.MustCompile(`\{\{env:([a-zA-Z0-9_]+)\}\}`)
+	data = re.ReplaceAllFunc(data, func(b []byte) []byte {
+		match := re.FindSubmatch(b)
+		if len(match) > 1 {
+			return []byte(os.Getenv(string(match[1])))
+		}
+		return b
+	})
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {

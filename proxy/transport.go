@@ -382,6 +382,10 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":generateContent"
 				}
 			} else if node.protocol == "openai" {
+				if node.apiKey != "" {
+					attemptReq.Header.Set("Authorization", "Bearer "+node.apiKey)
+				}
+				attemptReq.Header.Set("Content-Type", "application/json")
 				attemptReq.URL.Path = "/v1/chat/completions"
 			}
 
