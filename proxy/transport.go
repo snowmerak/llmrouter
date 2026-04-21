@@ -318,6 +318,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				log.Printf("[Proxy Error] Failed to marshal updated payload via adapter: %v", err)
 			}
 		} else if node.protocol == "anthropic" && universalReq != nil {
+			originalModel = universalReq.Model
 			clonedReq := *universalReq
 			if node.targetModel != "" {
 				clonedReq.Model = node.targetModel
