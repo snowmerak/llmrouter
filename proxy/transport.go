@@ -374,7 +374,11 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				attemptReq.Header.Set("anthropic-version", "2023-06-01")
 				attemptReq.URL.Path = "/v1/messages"
 			} else if node.protocol == "vertexai" {
-				if t.tokenSource != nil {
+				if node.apiKey != "" {
+					// Use API Key if provided (e.g., for Google AI Studio or API Key-enabled Vertex AI)
+					attemptReq.Header.Set("x-goog-api-key", node.apiKey)
+				} else if t.tokenSource != nil {
+					// Fallback to ADC
 					if tok, err := t.tokenSource.Token(); err == nil {
 						attemptReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 					}
@@ -427,12 +431,14 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					log.Printf("[Proxy Error] Failed to marshal Vertex embedding request: %v", err)
 				}
 
-				if t.tokenSource != nil {
+				if node.apiKey != "" {
+					attemptReq.Header.Set("x-goog-api-key", node.apiKey)
+				} else if t.tokenSource != nil {
 					if tok, err := t.tokenSource.Token(); err == nil {
 						attemptReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 					}
 				}
-				attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":predict"
+				attemptReq.URL.Path = node.url.Path + "/publishers/google/models/" + node.targetModel + ":predict"
 			} else if node.protocol == "openai" {
 				if node.apiKey != "" {
 					attemptReq.Header.Set("Authorization", "Bearer "+node.apiKey)
