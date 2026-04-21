@@ -50,3 +50,23 @@ type StreamChoice struct {
 	Index int     `json:"index"`
 	Delta Message `json:"delta,omitempty"`
 }
+
+// EmbeddingRequest is the universal format for an embedding request (OpenAI style).
+type EmbeddingRequest struct {
+	Model string      `json:"model"`
+	Input interface{} `json:"input"` // string or []string
+}
+
+// EmbeddingResponse is the universal format for an embedding response.
+type EmbeddingResponse struct {
+	Object string          `json:"object"`
+	Data   []EmbeddingData `json:"data"`
+	Model  string          `json:"model"`
+	Usage  map[string]int  `json:"usage,omitempty"`
+}
+
+type EmbeddingData struct {
+	Object    string    `json:"object"`
+	Embedding []float64 `json:"embedding"`
+	Index     int       `json:"index"`
+}
