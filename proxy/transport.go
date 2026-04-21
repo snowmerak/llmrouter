@@ -379,6 +379,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 						attemptReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 					}
 				}
+				attemptReq.URL.Path = node.url.Path
 				if clonedReq.Stream {
 					attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":streamGenerateContent"
 					attemptReq.URL.RawQuery = "alt=sse"
@@ -537,59 +538,64 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 						resp.Body.Close()
 
 						if err == nil {
-							var universalResp *schema.ChatResponse
-							
-							if !isEmbedding {
-								if node.protocol == "anthropic" {
-									log.Printf("[Proxy Rewrite Adapter] Activating Anthropic non-streaming parser")
-									universalResp, _ = anthropic.ToUniversalResponse(bodyBytes)
-								} else if node.protocol == "vertexai" {
-									log.Printf("[Proxy Rewrite Adapter] Activating Vertex AI non-streaming parser")
-									universalResp, _ = vertexai.ToUniversalResponse(bodyBytes)
-								} else {
-									log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming parser")
-									universalResp, _ = openai.ToUniversalResponse(bodyBytes)
-								}
-							}
-
-							if universalResp != nil {
-								if universalResp.Model == node.targetModel {
-									universalResp.Model = originalModel
-								}
-								
-								var newBytes []byte
-								if frontendProtocol == "anthropic" {
-									newBytes, err = anthropic.FromUniversalResponse(universalResp)
-								} else {
-									newBytes, err = openai.FromUniversalResponse(universalResp)
-								}
-
-								if err == nil {
-									finalBody = io.NopCloser(bytes.NewReader(newBytes))
-									resp.ContentLength = int64(len(newBytes))
-									resp.Header.Set("Content-Length", strconv.Itoa(len(newBytes)))
-								} else {
-									finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
-								}
+							if resp.StatusCode != http.StatusOK {
+								log.Printf("[Proxy Error] Backend %s returned status %d: %s", node.url.Host, resp.StatusCode, string(bodyBytes))
+								finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
 							} else {
-								if node.protocol == "vertexai" && isEmbedding {
-									newRespBytes, err := vertexai.FromVertexEmbeddingResponse(bodyBytes, originalModel)
-									if err == nil {
-										finalBody = io.NopCloser(bytes.NewReader(newRespBytes))
-										resp.ContentLength = int64(len(newRespBytes))
-										resp.Header.Set("Content-Length", strconv.Itoa(len(newRespBytes)))
+								var universalResp *schema.ChatResponse
+								
+								if !isEmbedding {
+									if node.protocol == "anthropic" {
+										log.Printf("[Proxy Rewrite Adapter] Activating Anthropic non-streaming parser")
+										universalResp, _ = anthropic.ToUniversalResponse(bodyBytes)
+									} else if node.protocol == "vertexai" {
+										log.Printf("[Proxy Rewrite Adapter] Activating Vertex AI non-streaming parser")
+										universalResp, _ = vertexai.ToUniversalResponse(bodyBytes)
 									} else {
-										log.Printf("[Proxy Error] Failed to unmarshal Vertex embedding response: %v", err)
+										log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming parser")
+										universalResp, _ = openai.ToUniversalResponse(bodyBytes)
+									}
+								}
+
+								if universalResp != nil {
+									if universalResp.Model == node.targetModel {
+										universalResp.Model = originalModel
+									}
+									
+									var newBytes []byte
+									if frontendProtocol == "anthropic" {
+										newBytes, err = anthropic.FromUniversalResponse(universalResp)
+									} else {
+										newBytes, err = openai.FromUniversalResponse(universalResp)
+									}
+
+									if err == nil {
+										finalBody = io.NopCloser(bytes.NewReader(newBytes))
+										resp.ContentLength = int64(len(newBytes))
+										resp.Header.Set("Content-Length", strconv.Itoa(len(newBytes)))
+									} else {
 										finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
 									}
 								} else {
-									// Fallback: simple string replacement for model name in response
-									log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming fast rewriter ('%s' -> '%s')", node.targetModel, originalModel)
-									replaced := bytes.Replace(bodyBytes, []byte(`"model":"`+node.targetModel+`"`), []byte(`"model":"`+originalModel+`"`), 1)
-									replaced = bytes.Replace(replaced, []byte(`"model": "`+node.targetModel+`"`), []byte(`"model": "`+originalModel+`"`), 1)
-									finalBody = io.NopCloser(bytes.NewReader(replaced))
-									resp.ContentLength = int64(len(replaced))
-									resp.Header.Set("Content-Length", strconv.Itoa(len(replaced)))
+									if node.protocol == "vertexai" && isEmbedding {
+										newRespBytes, err := vertexai.FromVertexEmbeddingResponse(bodyBytes, originalModel)
+										if err == nil {
+											finalBody = io.NopCloser(bytes.NewReader(newRespBytes))
+											resp.ContentLength = int64(len(newRespBytes))
+											resp.Header.Set("Content-Length", strconv.Itoa(len(newRespBytes)))
+										} else {
+											log.Printf("[Proxy Error] Failed to unmarshal Vertex embedding response: %v", err)
+											finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
+										}
+									} else {
+										// Fallback: simple string replacement for model name in response
+										log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming fast rewriter ('%s' -> '%s')", node.targetModel, originalModel)
+										replaced := bytes.Replace(bodyBytes, []byte(`"model":"`+node.targetModel+`"`), []byte(`"model":"`+originalModel+`"`), 1)
+										replaced = bytes.Replace(replaced, []byte(`"model": "`+node.targetModel+`"`), []byte(`"model": "`+originalModel+`"`), 1)
+										finalBody = io.NopCloser(bytes.NewReader(replaced))
+										resp.ContentLength = int64(len(replaced))
+										resp.Header.Set("Content-Length", strconv.Itoa(len(replaced)))
+									}
 								}
 							}
 						} else {

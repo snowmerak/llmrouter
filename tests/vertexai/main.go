@@ -19,7 +19,7 @@ func main() {
 		"messages": []map[string]interface{}{
 			{
 				"role":    "user",
-				"content": "What is the weather in Tokyo? Please use the get_weather tool.",
+				"content": "What is the current weather in San Francisco, CA? Please use the get_weather tool.",
 			},
 		},
 		"tools": []map[string]interface{}{
