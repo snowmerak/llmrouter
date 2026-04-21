@@ -7,8 +7,20 @@ import (
 	"github.com/snowmerak/llmrouter/schema"
 )
 
+type VertexFunctionCall struct {
+	Name string                 `json:"name"`
+	Args map[string]interface{} `json:"args"`
+}
+
+type VertexFunctionResponse struct {
+	Name     string                 `json:"name"`
+	Response map[string]interface{} `json:"response"`
+}
+
 type Part struct {
-	Text string `json:"text,omitempty"`
+	Text             string                  `json:"text,omitempty"`
+	FunctionCall     *VertexFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *VertexFunctionResponse `json:"functionResponse,omitempty"`
 }
 
 type Content struct {
@@ -22,10 +34,15 @@ type GenerationConfig struct {
 	MaxOutputTokens *int     `json:"maxOutputTokens,omitempty"`
 }
 
+type VertexTool struct {
+	FunctionDeclarations []schema.UniversalFunction `json:"functionDeclarations"`
+}
+
 type VertexRequest struct {
 	Contents          []Content         `json:"contents"`
 	SystemInstruction *Content          `json:"systemInstruction,omitempty"`
 	GenerationConfig  *GenerationConfig `json:"generationConfig,omitempty"`
+	Tools             []VertexTool      `json:"tools,omitempty"`
 }
 
 type Candidate struct {
@@ -48,26 +65,81 @@ func FromUniversalRequest(req *schema.ChatRequest) ([]byte, error) {
 		}
 	}
 
+	if len(req.Tools) > 0 {
+		var decls []schema.UniversalFunction
+		for _, tool := range req.Tools {
+			if tool.Type == "function" {
+				decls = append(decls, tool.Function)
+			}
+		}
+		if len(decls) > 0 {
+			vReq.Tools = []VertexTool{{FunctionDeclarations: decls}}
+		}
+	}
+
 	for _, msg := range req.Messages {
-		if msg.Role == nil || msg.Content == nil {
+		if msg.Role == nil {
 			continue
 		}
 		
 		roleStr := string(*msg.Role)
-		if roleStr == "system" {
-			vReq.SystemInstruction = &Content{
-				Role: "system",
-				Parts: []Part{{Text: *msg.Content}},
+		if roleStr == string(schema.RoleSystem) {
+			if msg.Content != nil {
+				vReq.SystemInstruction = &Content{
+					Role: "system",
+					Parts: []Part{{Text: *msg.Content}},
+				}
+			}
+		} else if roleStr == string(schema.RoleTool) {
+			if msg.ToolCallID != nil && msg.Content != nil {
+				var respMap map[string]interface{}
+				if err := json.Unmarshal([]byte(*msg.Content), &respMap); err != nil {
+					respMap = map[string]interface{}{"result": *msg.Content}
+				}
+				vReq.Contents = append(vReq.Contents, Content{
+					Role: "function",
+					Parts: []Part{
+						{
+							FunctionResponse: &VertexFunctionResponse{
+								Name:     *msg.ToolCallID,
+								Response: respMap,
+							},
+						},
+					},
+				})
 			}
 		} else {
-			// Vertex uses "model" instead of "assistant"
-			if roleStr == "assistant" {
+			if roleStr == string(schema.RoleAssistant) {
 				roleStr = "model"
 			}
-			vReq.Contents = append(vReq.Contents, Content{
-				Role:  roleStr,
-				Parts: []Part{{Text: *msg.Content}},
-			})
+			
+			var parts []Part
+			if msg.Content != nil && *msg.Content != "" {
+				parts = append(parts, Part{Text: *msg.Content})
+			}
+			
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					var args map[string]interface{}
+					json.Unmarshal([]byte(tc.Function.Arguments), &args)
+					if args == nil {
+						args = make(map[string]interface{})
+					}
+					parts = append(parts, Part{
+						FunctionCall: &VertexFunctionCall{
+							Name: tc.Function.Name,
+							Args: args,
+						},
+					})
+				}
+			}
+			
+			if len(parts) > 0 {
+				vReq.Contents = append(vReq.Contents, Content{
+					Role:  roleStr,
+					Parts: parts,
+				})
+			}
 		}
 	}
 	
@@ -86,6 +158,15 @@ func ToUniversalRequest(data []byte) (*schema.ChatRequest, error) {
 		req.TopP = vReq.GenerationConfig.TopP
 		req.MaxTokens = vReq.GenerationConfig.MaxOutputTokens
 	}
+
+	if len(vReq.Tools) > 0 && len(vReq.Tools[0].FunctionDeclarations) > 0 {
+		for _, decl := range vReq.Tools[0].FunctionDeclarations {
+			req.Tools = append(req.Tools, schema.UniversalTool{
+				Type:     "function",
+				Function: decl,
+			})
+		}
+	}
 	
 	if vReq.SystemInstruction != nil && len(vReq.SystemInstruction.Parts) > 0 {
 		sysRole := schema.RoleSystem
@@ -101,17 +182,54 @@ func ToUniversalRequest(data []byte) (*schema.ChatRequest, error) {
 		if roleStr == "model" {
 			roleStr = "assistant"
 		}
-		role := schema.Role(roleStr)
 		
-		txt := ""
-		if len(content.Parts) > 0 {
-			txt = content.Parts[0].Text
+		var txtStr string
+		var toolCalls []schema.UniversalToolCall
+		var toolCallID *string
+		isToolResult := false
+		
+		for _, part := range content.Parts {
+			if part.Text != "" {
+				txtStr += part.Text
+			}
+			if part.FunctionCall != nil {
+				argsBytes, _ := json.Marshal(part.FunctionCall.Args)
+				toolCalls = append(toolCalls, schema.UniversalToolCall{
+					ID: part.FunctionCall.Name, // Using name as ID
+					Type: "function",
+					Function: schema.UniversalToolCallFunction{
+						Name: part.FunctionCall.Name,
+						Arguments: string(argsBytes),
+					},
+				})
+			}
+			if part.FunctionResponse != nil {
+				isToolResult = true
+				idCopy := part.FunctionResponse.Name
+				toolCallID = &idCopy
+				resBytes, _ := json.Marshal(part.FunctionResponse.Response)
+				txtStr += string(resBytes)
+			}
 		}
 		
-		req.Messages = append(req.Messages, schema.Message{
-			Role:    &role,
-			Content: &txt,
-		})
+		if isToolResult {
+			roleStr = string(schema.RoleTool)
+		}
+		
+		role := schema.Role(roleStr)
+		uMsg := schema.Message{
+			Role: &role,
+		}
+		if txtStr != "" {
+			uMsg.Content = &txtStr
+		}
+		if len(toolCalls) > 0 {
+			uMsg.ToolCalls = toolCalls
+		}
+		if toolCallID != nil {
+			uMsg.ToolCallID = toolCallID
+		}
+		req.Messages = append(req.Messages, uMsg)
 	}
 	
 	return req, nil
@@ -123,31 +241,73 @@ func ToUniversalResponse(data []byte) (*schema.ChatResponse, error) {
 		return nil, err
 	}
 	
-	txt := ""
-	if len(vResp.Candidates) > 0 && vResp.Candidates[0].Content != nil && len(vResp.Candidates[0].Content.Parts) > 0 {
-		txt = vResp.Candidates[0].Content.Parts[0].Text
-	}
-	
 	role := schema.RoleAssistant
+	msg := schema.Message{
+		Role: &role,
+	}
+
+	if len(vResp.Candidates) > 0 && vResp.Candidates[0].Content != nil {
+		var txtStr string
+		var toolCalls []schema.UniversalToolCall
+		
+		for _, part := range vResp.Candidates[0].Content.Parts {
+			if part.Text != "" {
+				txtStr += part.Text
+			}
+			if part.FunctionCall != nil {
+				argsBytes, _ := json.Marshal(part.FunctionCall.Args)
+				toolCalls = append(toolCalls, schema.UniversalToolCall{
+					ID: part.FunctionCall.Name,
+					Type: "function",
+					Function: schema.UniversalToolCallFunction{
+						Name: part.FunctionCall.Name,
+						Arguments: string(argsBytes),
+					},
+				})
+			}
+		}
+		
+		if txtStr != "" {
+			msg.Content = &txtStr
+		}
+		if len(toolCalls) > 0 {
+			msg.ToolCalls = toolCalls
+		}
+	}
 	
 	return &schema.ChatResponse{
 		ID: "vertex-res",
 		Choices: []schema.Choice{
 			{
 				Index: 0,
-				Message: schema.Message{
-					Role:    &role,
-					Content: &txt,
-				},
+				Message: msg,
 			},
 		},
 	}, nil
 }
 
 func FromUniversalResponse(resp *schema.ChatResponse) ([]byte, error) {
-	txt := ""
-	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content != nil {
-		txt = *resp.Choices[0].Message.Content
+	var parts []Part
+	
+	if len(resp.Choices) > 0 {
+		msg := resp.Choices[0].Message
+		if msg.Content != nil && *msg.Content != "" {
+			parts = append(parts, Part{Text: *msg.Content})
+		}
+		
+		for _, tc := range msg.ToolCalls {
+			var args map[string]interface{}
+			json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			if args == nil {
+				args = make(map[string]interface{})
+			}
+			parts = append(parts, Part{
+				FunctionCall: &VertexFunctionCall{
+					Name: tc.Function.Name,
+					Args: args,
+				},
+			})
+		}
 	}
 	
 	vResp := VertexResponse{
@@ -155,7 +315,7 @@ func FromUniversalResponse(resp *schema.ChatResponse) ([]byte, error) {
 			{
 				Content: &Content{
 					Role: "model",
-					Parts: []Part{{Text: txt}},
+					Parts: parts,
 				},
 			},
 		},
@@ -176,9 +336,34 @@ func ParseStreamChunk(line []byte) (*schema.ChatStreamChunk, error) {
 		return nil, err
 	}
 	
-	txt := ""
-	if len(vResp.Candidates) > 0 && vResp.Candidates[0].Content != nil && len(vResp.Candidates[0].Content.Parts) > 0 {
-		txt = vResp.Candidates[0].Content.Parts[0].Text
+	msg := schema.Message{}
+	if len(vResp.Candidates) > 0 && vResp.Candidates[0].Content != nil {
+		var txtStr string
+		var toolCalls []schema.UniversalToolCall
+		
+		for _, part := range vResp.Candidates[0].Content.Parts {
+			if part.Text != "" {
+				txtStr += part.Text
+			}
+			if part.FunctionCall != nil {
+				argsBytes, _ := json.Marshal(part.FunctionCall.Args)
+				toolCalls = append(toolCalls, schema.UniversalToolCall{
+					ID: part.FunctionCall.Name,
+					Type: "function",
+					Function: schema.UniversalToolCallFunction{
+						Name: part.FunctionCall.Name,
+						Arguments: string(argsBytes),
+					},
+				})
+			}
+		}
+		
+		if txtStr != "" {
+			msg.Content = &txtStr
+		}
+		if len(toolCalls) > 0 {
+			msg.ToolCalls = toolCalls
+		}
 	}
 	
 	return &schema.ChatStreamChunk{
@@ -186,9 +371,7 @@ func ParseStreamChunk(line []byte) (*schema.ChatStreamChunk, error) {
 		Choices: []schema.StreamChoice{
 			{
 				Index: 0,
-				Delta: schema.Message{
-					Content: &txt,
-				},
+				Delta: msg,
 			},
 		},
 	}, nil
@@ -203,9 +386,25 @@ func FormatStreamChunk(chunk *schema.ChatStreamChunk, isEOF bool) ([]byte, error
 		return nil, nil
 	}
 	
-	txt := ""
-	if chunk.Choices[0].Delta.Content != nil {
-		txt = *chunk.Choices[0].Delta.Content
+	msg := chunk.Choices[0].Delta
+	var parts []Part
+	
+	if msg.Content != nil && *msg.Content != "" {
+		parts = append(parts, Part{Text: *msg.Content})
+	}
+	
+	for _, tc := range msg.ToolCalls {
+		var args map[string]interface{}
+		json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		if args == nil {
+			args = make(map[string]interface{})
+		}
+		parts = append(parts, Part{
+			FunctionCall: &VertexFunctionCall{
+				Name: tc.Function.Name,
+				Args: args,
+			},
+		})
 	}
 	
 	vResp := VertexResponse{
@@ -213,7 +412,7 @@ func FormatStreamChunk(chunk *schema.ChatStreamChunk, isEOF bool) ([]byte, error
 			{
 				Content: &Content{
 					Role: "model",
-					Parts: []Part{{Text: txt}},
+					Parts: parts,
 				},
 			},
 		},
