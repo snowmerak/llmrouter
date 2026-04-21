@@ -83,7 +83,7 @@ func (r *unifiedStreamRewriter) Read(p []byte) (n int, err error) {
 		chunk, parseErr := r.parser(line)
 
 		if parseErr == nil && chunk != nil {
-			if chunk.Model == r.targetModel {
+			if chunk.Model == r.targetModel || chunk.Model == "" {
 				chunk.Model = r.originalModel
 			}
 			formatted, formatErr := openai.FormatStreamChunk(chunk)
