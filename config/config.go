@@ -10,6 +10,7 @@ import (
 
 type Destination struct {
 	URL         string   `yaml:"url"`
+	Protocol    string   `yaml:"protocol"`
 	Weight      int      `yaml:"weight"`
 	Tags        []string `yaml:"tags"`
 	TargetModel string   `yaml:"target_model"`

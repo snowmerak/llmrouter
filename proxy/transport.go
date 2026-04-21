@@ -34,6 +34,7 @@ type destinationNode struct {
 	weight         int
 	tags           []string
 	targetModel    string
+	protocol       string
 	isAlive        atomic.Bool
 	activeRequests atomic.Int32
 }
@@ -150,12 +151,18 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 			w = 0
 		}
 
+		proto := dest.Protocol
+		if proto == "" {
+			proto = "openai" // default fallback
+		}
+
 		node := &destinationNode{
 			url:         u,
 			breaker:     gobreaker.NewCircuitBreaker(cbSettings),
 			weight:      w,
 			tags:        dest.Tags,
 			targetModel: dest.TargetModel,
+			protocol:    proto,
 		}
 		// Default to true so we don't drop requests before first ping returns
 		node.isAlive.Store(true)
@@ -297,7 +304,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		var originalModel string
 		attemptBodyBytes := bodyBytes
 
-		if universalReq != nil && node.targetModel != "" {
+		if node.protocol == "openai" && universalReq != nil && node.targetModel != "" {
 			originalModel = universalReq.Model
 			clonedReq := *universalReq // shallow copy
 			clonedReq.Model = node.targetModel
@@ -385,7 +392,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				var finalBody io.ReadCloser = resp.Body
 
 				// Inject response rewriter if we snapped the model
-				if originalModel != "" && node.targetModel != "" && originalModel != node.targetModel {
+				if node.protocol == "openai" && originalModel != "" && node.targetModel != "" && originalModel != node.targetModel {
 					log.Printf("[Proxy Rewrite Adapter] Activating response stream rewriter ('%s' -> '%s')", node.targetModel, originalModel)
 					finalBody = &responseRewriter{
 						originalBody:  resp.Body,

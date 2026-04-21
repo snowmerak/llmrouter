@@ -16,6 +16,7 @@ const defaultConfig = `server:
 
 destinations:
   - url: "http://localhost:11434"
+    protocol: "openai"
     weight: 1
     target_model: "llama3"
 
