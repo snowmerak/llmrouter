@@ -129,6 +129,8 @@ type anthropicStreamRewriter struct {
 	err           error
 	currentID     string
 	currentModel  string
+	targetModel   string
+	originalModel string
 	sentDone      bool
 }
 
@@ -147,6 +149,9 @@ func (r *anthropicStreamRewriter) Read(p []byte) (n int, err error) {
 		r.currentModel = nextModel
 
 		if parseErr == nil && chunk != nil {
+			if chunk.Model == r.targetModel {
+				chunk.Model = r.originalModel
+			}
 			formatted, formatErr := openai.FormatStreamChunk(chunk)
 			if formatErr == nil {
 				r.buf.Write(formatted)
@@ -272,11 +277,12 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	var requiredTag string
-	if !isMetadataRoute && requestedModel != "" && t.cfg != nil && t.cfg.ModelRouting != nil {
-		if mappedTag, ok := t.cfg.ModelRouting[requestedModel]; ok {
-			requiredTag = mappedTag
-		} else {
-			requiredTag = "default"
+	if !isMetadataRoute && requestedModel != "" {
+		requiredTag = requestedModel // Default to requested model as the tag
+		if t.cfg != nil && t.cfg.ModelRouting != nil {
+			if mappedTag, ok := t.cfg.ModelRouting[requestedModel]; ok {
+				requiredTag = mappedTag // Override if explicitly mapped
+			}
 		}
 	}
 
@@ -463,10 +469,12 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				var finalBody io.ReadCloser = resp.Body
 
 				if node.protocol == "anthropic" {
-					log.Printf("[Proxy Rewrite Adapter] Activating Anthropic stream translator")
+					log.Printf("[Proxy Rewrite Adapter] Activating Anthropic stream translator ('%s' -> '%s')", node.targetModel, originalModel)
 					finalBody = &anthropicStreamRewriter{
-						originalBody: resp.Body,
-						reader:       bufio.NewReader(resp.Body),
+						originalBody:  resp.Body,
+						reader:        bufio.NewReader(resp.Body),
+						targetModel:   node.targetModel,
+						originalModel: originalModel,
 					}
 				} else if node.protocol == "openai" && originalModel != "" && node.targetModel != "" && originalModel != node.targetModel {
 					log.Printf("[Proxy Rewrite Adapter] Activating response stream rewriter ('%s' -> '%s')", node.targetModel, originalModel)
