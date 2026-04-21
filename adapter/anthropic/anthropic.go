@@ -216,27 +216,117 @@ func ToUniversalRequest(data []byte) (*schema.ChatRequest, error) {
 		})
 	}
 
-	for _, msg := range req.Messages {
-		role := schema.Role(msg.Role)
-		var contentStr string
-		switch c := msg.Content.(type) {
-		case string:
-			contentStr = c
-		case []interface{}:
-			for _, b := range c {
-				if bm, ok := b.(map[string]interface{}); ok {
-					if t, ok := bm["type"].(string); ok && t == "text" {
-						if text, ok := bm["text"].(string); ok {
-							contentStr += text
+	if len(req.Tools) > 0 {
+		for _, tool := range req.Tools {
+			universalReq.Tools = append(universalReq.Tools, schema.UniversalTool{
+				Type: "function",
+				Function: schema.UniversalFunction{
+					Name:        tool.Name,
+					Description: tool.Description,
+					Parameters:  tool.InputSchema,
+				},
+			})
+		}
+	}
+
+	if req.ToolChoice != nil {
+		switch tc := req.ToolChoice.(type) {
+		case map[string]interface{}:
+			if t, ok := tc["type"].(string); ok {
+				if t == "auto" {
+					universalReq.ToolChoice = "auto"
+				} else if t == "any" {
+					universalReq.ToolChoice = "required"
+				} else if t == "tool" {
+					if name, ok := tc["name"].(string); ok {
+						universalReq.ToolChoice = map[string]interface{}{
+							"type": "function",
+							"function": map[string]interface{}{
+								"name": name,
+							},
 						}
 					}
 				}
 			}
 		}
-		universalReq.Messages = append(universalReq.Messages, schema.Message{
-			Role:    &role,
-			Content: &contentStr,
-		})
+	}
+
+	for _, msg := range req.Messages {
+		role := schema.Role(msg.Role)
+		var contentStr string
+		var toolCalls []schema.UniversalToolCall
+
+		switch c := msg.Content.(type) {
+		case string:
+			contentStr = c
+			universalReq.Messages = append(universalReq.Messages, schema.Message{
+				Role:    &role,
+				Content: &contentStr,
+			})
+		case []interface{}:
+			hasToolUseOrText := false
+			for _, b := range c {
+				if bm, ok := b.(map[string]interface{}); ok {
+					t, _ := bm["type"].(string)
+					if t == "text" {
+						if text, ok := bm["text"].(string); ok {
+							contentStr += text
+						}
+						hasToolUseOrText = true
+					} else if t == "tool_use" {
+						if id, ok := bm["id"].(string); ok {
+							if name, ok := bm["name"].(string); ok {
+								args := "{}"
+								if input, ok := bm["input"].(map[string]interface{}); ok {
+									if bArgs, err := json.Marshal(input); err == nil {
+										args = string(bArgs)
+									}
+								}
+								toolCalls = append(toolCalls, schema.UniversalToolCall{
+									ID:   id,
+									Type: "function",
+									Function: schema.UniversalToolCallFunction{
+										Name:      name,
+										Arguments: args,
+									},
+								})
+							}
+						}
+						hasToolUseOrText = true
+					} else if t == "tool_result" {
+						if id, ok := bm["tool_use_id"].(string); ok {
+							idCopy := id
+							var resStr string
+							if resContent, ok := bm["content"].(string); ok {
+								resStr = resContent
+							} else {
+								bRes, _ := json.Marshal(bm["content"])
+								resStr = string(bRes)
+							}
+							toolRole := schema.RoleTool
+							universalReq.Messages = append(universalReq.Messages, schema.Message{
+								Role:       &toolRole,
+								Content:    &resStr,
+								ToolCallID: &idCopy,
+							})
+						}
+					}
+				}
+			}
+
+			if hasToolUseOrText {
+				uMsg := schema.Message{
+					Role: &role,
+				}
+				if contentStr != "" {
+					uMsg.Content = &contentStr
+				}
+				if len(toolCalls) > 0 {
+					uMsg.ToolCalls = toolCalls
+				}
+				universalReq.Messages = append(universalReq.Messages, uMsg)
+			}
+		}
 	}
 
 	return universalReq, nil
@@ -290,9 +380,30 @@ func ToUniversalResponse(data []byte) (*schema.ChatResponse, error) {
 }
 
 func FromUniversalResponse(resp *schema.ChatResponse) ([]byte, error) {
-	content := ""
-	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content != nil {
-		content = *resp.Choices[0].Message.Content
+	var contents []AnthropicContent
+	
+	if len(resp.Choices) > 0 {
+		msg := resp.Choices[0].Message
+		if msg.Content != nil && *msg.Content != "" {
+			contents = append(contents, AnthropicContent{
+				Type: "text",
+				Text: *msg.Content,
+			})
+		}
+		
+		for _, tc := range msg.ToolCalls {
+			var input map[string]interface{}
+			json.Unmarshal([]byte(tc.Function.Arguments), &input)
+			if input == nil {
+				input = make(map[string]interface{})
+			}
+			contents = append(contents, AnthropicContent{
+				Type:  "tool_use",
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: input,
+			})
+		}
 	}
 	
 	anthropicResp := AnthropicResponse{
@@ -300,12 +411,7 @@ func FromUniversalResponse(resp *schema.ChatResponse) ([]byte, error) {
 		Type:  "message",
 		Role:  "assistant",
 		Model: resp.Model,
-		Content: []AnthropicContent{
-			{
-				Type: "text",
-				Text: content,
-			},
-		},
+		Content: contents,
 	}
 	return json.Marshal(anthropicResp)
 }

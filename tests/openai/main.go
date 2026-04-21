@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 )
@@ -15,14 +15,33 @@ func main() {
 
 	// Mock OpenAI request payload
 	payload := map[string]interface{}{
-		"model": "light", // Will be translated to target_model by the router
+		"model": "light", // Will be translated to target_model by the router (anthropic backend)
 		"messages": []map[string]interface{}{
 			{
 				"role":    "user",
-				"content": "What is your name?",
+				"content": "What is the weather in Tokyo? Please use the get_weather tool.",
 			},
 		},
-		"stream": true,
+		"tools": []map[string]interface{}{
+			{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":        "get_weather",
+					"description": "Get the current weather in a given location",
+					"parameters": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"location": map[string]interface{}{
+								"type":        "string",
+								"description": "The city and state, e.g. San Francisco, CA",
+							},
+						},
+						"required": []string{"location"},
+					},
+				},
+			},
+		},
+		"stream": false,
 	}
 
 	reqBody, err := json.Marshal(payload)
@@ -50,15 +69,20 @@ func main() {
 		log.Printf("Failed to process request correctly. Status: %d", resp.StatusCode)
 	}
 
-	// Read stream
-	fmt.Println("--- Stream Output ---")
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		fmt.Println(scanner.Text())
+	// Read output
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("Failed to read response body: %v", err)
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Fatalf("Error reading stream: %v", err)
+	fmt.Println("--- Response Output ---")
+
+	// Pretty print JSON
+	var prettyJSON bytes.Buffer
+	if err := json.Indent(&prettyJSON, bodyBytes, "", "  "); err == nil {
+		fmt.Println(prettyJSON.String())
+	} else {
+		fmt.Println(string(bodyBytes))
 	}
-	fmt.Println("--- Stream End ---")
+	fmt.Println("--- Response End ---")
 }

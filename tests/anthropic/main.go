@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 )
@@ -17,14 +17,30 @@ func main() {
 	// Requesting "super" which routes to openai backend (qwen3.6)
 	// This tests Cross-Protocol Routing: Anthropic Client -> Router -> OpenAI Backend
 	payload := map[string]interface{}{
-		"model": "super", 
+		"model": "super",
 		"messages": []map[string]interface{}{
 			{
 				"role":    "user",
-				"content": "What is your name?",
+				"content": "What is the weather in Tokyo? Please use the get_weather tool.",
 			},
 		},
-		"stream": true,
+		"tools": []map[string]interface{}{
+			{
+				"name":        "get_weather",
+				"description": "Get the current weather in a given location",
+				"input_schema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"location": map[string]interface{}{
+							"type":        "string",
+							"description": "The city and state, e.g. San Francisco, CA",
+						},
+					},
+					"required": []string{"location"},
+				},
+			},
+		},
+		"stream": false,
 	}
 
 	reqBody, err := json.Marshal(payload)
@@ -40,7 +56,6 @@ func main() {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-key")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -49,15 +64,15 @@ func main() {
 	defer resp.Body.Close()
 
 	fmt.Printf("Response Status: %s\n", resp.Status)
-	fmt.Println("--- Stream Output ---")
+	fmt.Println("--- Response Output ---")
 
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		fmt.Println(scanner.Text())
+	var prettyJSON bytes.Buffer
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if err := json.Indent(&prettyJSON, bodyBytes, "", "  "); err == nil {
+		fmt.Println(prettyJSON.String())
+	} else {
+		fmt.Println(string(bodyBytes))
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Fatalf("Stream reading error: %v", err)
-	}
-	fmt.Println("\n--- Stream End ---")
+	fmt.Println("\n--- Response End ---")
 }
