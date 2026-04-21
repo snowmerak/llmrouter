@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,11 +11,46 @@ import (
 	"github.com/snowmerak/llmrouter/proxy"
 )
 
+const defaultConfig = `server:
+  port: 11656
+
+destinations:
+  - url: "http://localhost:11434"
+    weight: 1
+    target_model: "llama3"
+
+health_check:
+  enabled: true
+  interval_secs: 10
+  timeout_secs: 3
+  ping_path: "/"
+
+circuit_breaker:
+  max_requests: 3
+  interval_secs: 600
+  timeout_secs: 300
+`
+
 func main() {
+	var initFlag bool
+	var initFlagShort bool
+
+	flag.BoolVar(&initFlag, "init", false, "Generate default config.yaml")
+	flag.BoolVar(&initFlagShort, "i", false, "Generate default config.yaml")
+	flag.Parse()
+
+	if initFlag || initFlagShort {
+		if err := os.WriteFile("config.yaml", []byte(defaultConfig), 0644); err != nil {
+			log.Fatalf("Failed to write default config.yaml: %v", err)
+		}
+		fmt.Println("Generated default config.yaml")
+		return
+	}
+
 	// Try to load config.yaml from current directory
 	cfgPath := "config.yaml"
-	if len(os.Args) > 1 {
-		cfgPath = os.Args[1]
+	if flag.NArg() > 0 {
+		cfgPath = flag.Arg(0)
 	}
 
 	cfg, err := config.LoadConfig(cfgPath)
