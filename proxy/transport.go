@@ -17,8 +17,12 @@ import (
 
 	"github.com/snowmerak/llmrouter/adapter/anthropic"
 	"github.com/snowmerak/llmrouter/adapter/openai"
+	"github.com/snowmerak/llmrouter/adapter/vertexai"
 	"github.com/snowmerak/llmrouter/config"
 	"github.com/snowmerak/llmrouter/schema"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 
 	"github.com/sony/gobreaker"
 )
@@ -27,6 +31,7 @@ type MultiTransport struct {
 	baseTransport http.RoundTripper
 	destinations  []*destinationNode
 	cfg           *config.Config
+	tokenSource   oauth2.TokenSource
 }
 
 type destinationNode struct {
@@ -170,10 +175,17 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 		}
 	}
 
+	var ts oauth2.TokenSource
+	ts, err := google.DefaultTokenSource(ctx, "https://www.googleapis.com/auth/cloud-platform")
+	if err != nil {
+		log.Printf("[Proxy Warning] Failed to initialize Google ADC TokenSource: %v", err)
+	}
+
 	return &MultiTransport{
 		baseTransport: baseTransport,
 		destinations:  nodes,
 		cfg:           cfg,
+		tokenSource:   ts,
 	}
 }
 
@@ -331,6 +343,8 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 			if node.protocol == "anthropic" {
 				newBody, encodeErr = anthropic.FromUniversalRequest(&clonedReq)
+			} else if node.protocol == "vertexai" {
+				newBody, encodeErr = vertexai.FromUniversalRequest(&clonedReq)
 			} else {
 				// Default is openai
 				newBody, encodeErr = openai.FromUniversalRequest(&clonedReq)
@@ -355,6 +369,18 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				}
 				attemptReq.Header.Set("anthropic-version", "2023-06-01")
 				attemptReq.URL.Path = "/v1/messages"
+			} else if node.protocol == "vertexai" {
+				if t.tokenSource != nil {
+					if tok, err := t.tokenSource.Token(); err == nil {
+						attemptReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+					}
+				}
+				if clonedReq.Stream {
+					attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":streamGenerateContent"
+					attemptReq.URL.RawQuery = "alt=sse"
+				} else {
+					attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":generateContent"
+				}
 			} else if node.protocol == "openai" {
 				attemptReq.URL.Path = "/v1/chat/completions"
 			}
@@ -445,6 +471,11 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 							currentModel = nextModel
 							return chunk, err
 						}
+					} else if node.protocol == "vertexai" {
+						log.Printf("[Proxy Rewrite Adapter] Activating Vertex AI stream parser")
+						parser = func(line []byte) (*schema.ChatStreamChunk, error) {
+							return vertexai.ParseStreamChunk(line)
+						}
 					} else {
 						log.Printf("[Proxy Rewrite Adapter] Activating OpenAI stream parser")
 						parser = func(line []byte) (*schema.ChatStreamChunk, error) {
@@ -479,6 +510,9 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 							if node.protocol == "anthropic" {
 								log.Printf("[Proxy Rewrite Adapter] Activating Anthropic non-streaming parser")
 								universalResp, _ = anthropic.ToUniversalResponse(bodyBytes)
+							} else if node.protocol == "vertexai" {
+								log.Printf("[Proxy Rewrite Adapter] Activating Vertex AI non-streaming parser")
+								universalResp, _ = vertexai.ToUniversalResponse(bodyBytes)
 							} else {
 								log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming parser")
 								universalResp, _ = openai.ToUniversalResponse(bodyBytes)
