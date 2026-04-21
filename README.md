@@ -7,7 +7,7 @@ LLM Router is a high-performance, reverse-proxy based API Gateway designed to un
 *   **M x N Protocol Translation:** Clients can send requests using either OpenAI (`/v1/chat/completions`) or Anthropic (`/v1/messages`) formats. The router intercepts the HTTP stream and transparently translates the payload and Server-Sent Events (SSE) to match the target backend.
 *   **Universal Tool Calling (Function Calling):** Fully supports bidirectional, cross-provider tool calling. You can seamlessly route OpenAI `tool_calls` to an Anthropic backend, or Anthropic `tool_use` to a Vertex AI (Gemini) backend. The router handles all JSON schema mapping, argument serialization, and streaming delta restructuring automatically.
 *   **Reverse Proxy Architecture:** Instead of using heavy provider SDKs, the router operates at the HTTP layer using `httputil.ReverseProxy`. It performs zero-copy stream interception, resulting in ultra-low latency and minimal memory footprint.
-*   **Zero-config Vertex AI Auth:** Automatically utilizes Google Application Default Credentials (ADC). No need to hardcode JSON keys; just run `gcloud auth application-default login` on the host machine.
+*   **Zero-config Vertex AI & Google AI Studio Auth:** Automatically utilizes Google Application Default Credentials (ADC) for Vertex AI, or accepts standard API Keys (`x-goog-api-key`) for Google AI Studio. No need to worry about authentication headers!
 *   **Dynamic Model Routing:** Maps client-requested model names (e.g., `light`, `super`) to specific backend node models (e.g., `gemma-4-26b...`, `minimax-m2.7...`).
 *   **Resiliency:** Features built-in Circuit Breakers (via `gobreaker`), background health-checks, round-robin load balancing, and hot-reloadable configurations without dropping active connections.
 
@@ -58,9 +58,12 @@ destinations:
     target_model: "text-embedding-qwen3-embedding-0.6b"
     tags: ["embedding"]
 
+  # Example 4: Vertex AI / Google AI Studio Node
   - url: "https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1"
+    # Or for AI Studio: url: "https://generativelanguage.googleapis.com/v1beta"
     protocol: "vertexai"
     weight: 1
+    # api_key: "{{env:GEMINI_API_KEY}}" # Uncomment to use API Key instead of ADC
     target_model: "gemini-2.5-pro"
     tags: ["gemini"]
 
