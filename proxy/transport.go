@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/snowmerak/llmrouter/adapter/anthropic"
 	"github.com/snowmerak/llmrouter/adapter/openai"
 	"github.com/snowmerak/llmrouter/config"
 	"github.com/snowmerak/llmrouter/schema"
@@ -35,6 +36,7 @@ type destinationNode struct {
 	tags           []string
 	targetModel    string
 	protocol       string
+	apiKey         string
 	isAlive        atomic.Bool
 	activeRequests atomic.Int32
 }
@@ -120,6 +122,59 @@ func (r *responseRewriter) Close() error {
 	return r.originalBody.Close()
 }
 
+type anthropicStreamRewriter struct {
+	originalBody  io.ReadCloser
+	reader        *bufio.Reader
+	buf           bytes.Buffer
+	err           error
+	currentID     string
+	currentModel  string
+	sentDone      bool
+}
+
+func (r *anthropicStreamRewriter) Read(p []byte) (n int, err error) {
+	if r.buf.Len() > 0 {
+		return r.buf.Read(p)
+	}
+	if r.err != nil {
+		return 0, r.err
+	}
+
+	line, readErr := r.reader.ReadBytes('\n')
+	if len(line) > 0 {
+		chunk, nextID, nextModel, parseErr := anthropic.ParseStreamChunk(line, r.currentID, r.currentModel)
+		r.currentID = nextID
+		r.currentModel = nextModel
+
+		if parseErr == nil && chunk != nil {
+			formatted, formatErr := openai.FormatStreamChunk(chunk)
+			if formatErr == nil {
+				r.buf.Write(formatted)
+			}
+		} else if parseErr == nil && chunk == nil {
+			if len(bytes.TrimSpace(line)) == 0 {
+				r.buf.Write([]byte("\n"))
+			}
+		}
+	}
+	if readErr != nil {
+		if readErr == io.EOF && !r.sentDone {
+			r.buf.Write([]byte("data: [DONE]\n\n"))
+			r.sentDone = true
+		}
+		r.err = readErr
+	}
+
+	if r.buf.Len() > 0 {
+		return r.buf.Read(p)
+	}
+	return 0, r.err
+}
+
+func (r *anthropicStreamRewriter) Close() error {
+	return r.originalBody.Close()
+}
+
 // NewMultiTransport creates a custom HTTP transport with fallback and circuit breaker logic
 func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport http.RoundTripper) *MultiTransport {
 	if baseTransport == nil {
@@ -163,6 +218,7 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 			tags:        dest.Tags,
 			targetModel: dest.TargetModel,
 			protocol:    proto,
+			apiKey:      dest.ApiKey,
 		}
 		// Default to true so we don't drop requests before first ping returns
 		node.isAlive.Store(true)
@@ -321,6 +377,21 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			} else {
 				log.Printf("[Proxy Error] Failed to marshal updated payload via adapter: %v", err)
 			}
+		} else if node.protocol == "anthropic" && universalReq != nil {
+			clonedReq := *universalReq
+			if node.targetModel != "" {
+				clonedReq.Model = node.targetModel
+			}
+			if newBody, err := anthropic.FromUniversalRequest(&clonedReq); err == nil {
+				attemptBodyBytes = newBody
+				attemptReq.ContentLength = int64(len(attemptBodyBytes))
+				attemptReq.Header.Set("Content-Length", strconv.Itoa(len(attemptBodyBytes)))
+			}
+			if node.apiKey != "" {
+				attemptReq.Header.Set("x-api-key", node.apiKey)
+			}
+			attemptReq.Header.Set("anthropic-version", "2023-06-01")
+			attemptReq.URL.Path = "/v1/messages"
 		} else if bodyBytes != nil && node.targetModel != "" {
 			var payload map[string]interface{}
 			if err := json.Unmarshal(bodyBytes, &payload); err == nil {
@@ -391,8 +462,13 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if resp != nil && resp.Body != nil {
 				var finalBody io.ReadCloser = resp.Body
 
-				// Inject response rewriter if we snapped the model
-				if node.protocol == "openai" && originalModel != "" && node.targetModel != "" && originalModel != node.targetModel {
+				if node.protocol == "anthropic" {
+					log.Printf("[Proxy Rewrite Adapter] Activating Anthropic stream translator")
+					finalBody = &anthropicStreamRewriter{
+						originalBody: resp.Body,
+						reader:       bufio.NewReader(resp.Body),
+					}
+				} else if node.protocol == "openai" && originalModel != "" && node.targetModel != "" && originalModel != node.targetModel {
 					log.Printf("[Proxy Rewrite Adapter] Activating response stream rewriter ('%s' -> '%s')", node.targetModel, originalModel)
 					finalBody = &responseRewriter{
 						originalBody:  resp.Body,
