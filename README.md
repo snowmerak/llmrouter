@@ -24,8 +24,8 @@ LLM Router is a high-performance, reverse-proxy based API Gateway designed to un
 ### 1. Installation
 
 ```bash
-# Clone the repository and download dependencies
-go mod tidy
+# Install globally via go install
+go install github.com/snowmerak/llmrouter@latest
 
 # If using Vertex AI, ensure Google ADC is configured on your system
 gcloud auth application-default login
@@ -33,7 +33,13 @@ gcloud auth application-default login
 
 ### 2. Configuration (`config.yaml`)
 
-Create a `config.yaml` file in the root directory.
+You can automatically generate a default configuration file by running the `--init` flag:
+
+```bash
+llmrouter --init
+```
+
+This will create a `config.yaml` file in the root directory with the following structure. You can then edit it to match your desired destinations:
 
 ```yaml
 server:
@@ -84,7 +90,7 @@ circuit_breaker:
 ### 3. Running the Router
 
 ```bash
-go run .
+llmrouter
 ```
 The router will hot-reload automatically if `config.yaml` is modified during runtime.
 
