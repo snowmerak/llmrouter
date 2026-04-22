@@ -19,6 +19,9 @@ destinations:
     protocol: "openai"
     weight: 1
     target_model: "llama3"
+    tags: ["llama3"]
+    context_length: 32768
+    capabilities: ["generate", "chat", "tools", "embedding"]
 
 health_check:
   enabled: true

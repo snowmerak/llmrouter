@@ -32,7 +32,7 @@ func (t *MultiTransport) getAllAvailableModels() []string {
 }
 
 func (t *MultiTransport) getModelMetadata(modelName string) (int, []string) {
-	ctxLength := 8192
+	ctxLength := 32768
 	caps := []string{"generate", "chat", "tools", "embedding"}
 
 	for _, dest := range t.destinations {

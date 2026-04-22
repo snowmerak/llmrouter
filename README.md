@@ -51,6 +51,8 @@ destinations:
     weight: 1
     target_model: "qwen3.6-35b-a3b"
     tags: ["super"]
+    context_length: 32768
+    capabilities: ["generate", "chat", "tools", "embedding"]
 
   - url: "http://m4max128:1234"
     protocol: "anthropic"
