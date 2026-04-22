@@ -106,6 +106,10 @@ destinations:
     context_length: 200000
     capabilities: ["generate", "chat", "tools"]
 
+metrics:
+  enabled: true
+  port: 9090
+
 health_check:
   enabled: true
   interval_secs: 10

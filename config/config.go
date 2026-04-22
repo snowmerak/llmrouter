@@ -37,8 +37,14 @@ type Server struct {
 	Port int `yaml:"port"`
 }
 
+type Metrics struct {
+	Enabled bool `yaml:"enabled"`
+	Port    int  `yaml:"port"`
+}
+
 type Config struct {
 	Server         Server            `yaml:"server"`
+	Metrics        Metrics           `yaml:"metrics"`
 	HealthCheck    HealthCheck       `yaml:"health_check"`
 	Destinations   []Destination     `yaml:"destinations"`
 	CircuitBreaker CircuitBreaker    `yaml:"circuit_breaker"`

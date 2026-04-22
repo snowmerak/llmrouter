@@ -20,6 +20,7 @@ import (
 	"github.com/snowmerak/llmrouter/adapter/openai"
 	"github.com/snowmerak/llmrouter/adapter/vertexai"
 	"github.com/snowmerak/llmrouter/config"
+	"github.com/snowmerak/llmrouter/metrics"
 	"github.com/snowmerak/llmrouter/schema"
 
 	"golang.org/x/oauth2"
@@ -146,6 +147,16 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 			},
 			OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
 				log.Printf("[CircuitBreaker] %s transitioned from %s to %s", name, from.String(), to.String())
+				var val float64
+				switch to {
+				case gobreaker.StateClosed:
+					val = 0
+				case gobreaker.StateOpen:
+					val = 1
+				case gobreaker.StateHalfOpen:
+					val = 2
+				}
+				metrics.CircuitBreakerState.WithLabelValues(u.Host).Set(val)
 			},
 		}
 
@@ -400,14 +411,17 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		attemptReq := req.Clone(req.Context())
 		
 		var originalModel string
+		var finalModel string
 		attemptBodyBytes := bodyBytes
 
 		if universalReq != nil {
 			originalModel = universalReq.Model
 			clonedReq := *universalReq // shallow copy
+			finalModel = clonedReq.Model
 
 			if node.targetModel != "" {
 				clonedReq.Model = node.targetModel
+				finalModel = clonedReq.Model
 			}
 
 			var newBody []byte
@@ -534,6 +548,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Use Circuit Breaker Execute
 		res, err := node.breaker.Execute(func() (interface{}, error) {
 			node.activeRequests.Add(1)
+			metrics.ActiveRequests.WithLabelValues(node.url.Host).Inc()
 
 			start := time.Now()
 			log.Printf("[Proxy Out] Starting request to %s (Path: %s)", node.url.Host, attemptReq.URL.Path)
@@ -542,9 +557,17 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			
 			elapsed := time.Since(start)
 
+			modelName := originalModel
+			if finalModel != "" {
+				modelName = finalModel
+			}
+
 			if reqErr != nil {
 				log.Printf("[Proxy Error] Request to %s failed after %v: %v", node.url.Host, elapsed, reqErr)
 				node.activeRequests.Add(-1)
+				metrics.ActiveRequests.WithLabelValues(node.url.Host).Dec()
+				metrics.RequestsTotal.WithLabelValues(node.url.Host, modelName, "error").Inc()
+				metrics.RequestDuration.WithLabelValues(node.url.Host, modelName).Observe(elapsed.Seconds())
 				return resp, reqErr
 			}
 
@@ -556,8 +579,14 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				resp.StatusCode == http.StatusGatewayTimeout) {
 				// We return error to trip the breaker, wrapper handles response
 				node.activeRequests.Add(-1)
+				metrics.ActiveRequests.WithLabelValues(node.url.Host).Dec()
+				metrics.RequestsTotal.WithLabelValues(node.url.Host, modelName, strconv.Itoa(resp.StatusCode)).Inc()
+				metrics.RequestDuration.WithLabelValues(node.url.Host, modelName).Observe(elapsed.Seconds())
 				return resp, http.ErrServerClosed // fake error to register failure
 			}
+
+			metrics.RequestsTotal.WithLabelValues(node.url.Host, modelName, strconv.Itoa(resp.StatusCode)).Inc()
+			metrics.RequestDuration.WithLabelValues(node.url.Host, modelName).Observe(elapsed.Seconds())
 
 			if resp != nil && resp.Body != nil {
 				isStreamResp := resp.StatusCode == http.StatusOK && 
@@ -701,10 +730,12 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					ReadCloser: finalBody,
 					onClose: func() {
 						node.activeRequests.Add(-1)
+						metrics.ActiveRequests.WithLabelValues(node.url.Host).Dec()
 					},
 				}
 			} else {
 				node.activeRequests.Add(-1)
+				metrics.ActiveRequests.WithLabelValues(node.url.Host).Dec()
 			}
 			return resp, nil
 		})

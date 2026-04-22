@@ -9,6 +9,7 @@ import (
 
 	"github.com/snowmerak/llmrouter/config"
 	"github.com/snowmerak/llmrouter/proxy"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const defaultConfig = `server:
@@ -22,6 +23,10 @@ destinations:
     tags: ["llama3"]
     context_length: 32768
     capabilities: ["generate", "chat", "tools", "embedding"]
+
+metrics:
+  enabled: true
+  port: 9090
 
 health_check:
   enabled: true
@@ -74,6 +79,22 @@ func main() {
 		reloadableTransport.Update(newCfg)
 		log.Printf("Proxy destinations successfully updated without downtime!")
 	})
+
+	if cfg.Metrics.Enabled {
+		metricsPort := cfg.Metrics.Port
+		if metricsPort == 0 {
+			metricsPort = 9090 // Default
+		}
+		go func() {
+			metricsAddr := fmt.Sprintf(":%d", metricsPort)
+			log.Printf("Starting Prometheus Metrics Server on %s", metricsAddr)
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", promhttp.Handler())
+			if err := http.ListenAndServe(metricsAddr, mux); err != nil {
+				log.Fatalf("Metrics server failed: %v", err)
+			}
+		}()
+	}
 
 	// Since the user specified "only Ollama traffic will hit this",
 	// we just handle all requests with the proxy.
