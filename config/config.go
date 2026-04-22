@@ -10,12 +10,14 @@ import (
 )
 
 type Destination struct {
-	URL         string   `yaml:"url"`
-	Protocol    string   `yaml:"protocol"`
-	ApiKey      string   `yaml:"api_key"`
-	Weight      int      `yaml:"weight"`
-	Tags        []string `yaml:"tags"`
-	TargetModel string   `yaml:"target_model"`
+	URL           string   `yaml:"url"`
+	Protocol      string   `yaml:"protocol"`
+	ApiKey        string   `yaml:"api_key"`
+	Weight        int      `yaml:"weight"`
+	Tags          []string `yaml:"tags"`
+	TargetModel   string   `yaml:"target_model"`
+	ContextLength int      `yaml:"context_length"`
+	Capabilities  []string `yaml:"capabilities"`
 }
 
 type HealthCheck struct {

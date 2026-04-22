@@ -31,6 +31,26 @@ func (t *MultiTransport) getAllAvailableModels() []string {
 	return models
 }
 
+func (t *MultiTransport) getModelMetadata(modelName string) (int, []string) {
+	ctxLength := 8192
+	caps := []string{"generate", "chat", "tools", "embedding"}
+
+	for _, dest := range t.destinations {
+		for _, tag := range dest.tags {
+			if tag == modelName {
+				if dest.contextLength > 0 {
+					ctxLength = dest.contextLength
+				}
+				if len(dest.capabilities) > 0 {
+					caps = dest.capabilities
+				}
+				return ctxLength, caps
+			}
+		}
+	}
+	return ctxLength, caps
+}
+
 func (t *MultiTransport) handleOpenAIModels(req *http.Request) (*http.Response, error) {
 	models := t.getAllAvailableModels()
 
@@ -149,6 +169,14 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 		ModifiedAt   string                 `json:"modified_at"`
 	}
 
+	type showReq struct {
+		Name string `json:"name"`
+	}
+	var reqBody showReq
+	json.Unmarshal(bodyBytes, &reqBody)
+
+	ctxLength, caps := t.getModelMetadata(reqBody.Name)
+
 	resp := OllamaShowResponse{
 		License:    "MIT",
 		Modelfile:  "FROM llama\nTEMPLATE \"{{ .Prompt }}\"",
@@ -165,9 +193,9 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 		},
 		ModelInfo: map[string]interface{}{
 			"general.architecture": "llama",
-			"llama.context_length": 8192,
+			"llama.context_length": ctxLength,
 		},
-		Capabilities: []string{"generate", "chat", "tools", "embedding"},
+		Capabilities: caps,
 		ModifiedAt:   "2024-04-23T00:00:00Z",
 	}
 

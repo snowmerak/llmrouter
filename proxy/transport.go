@@ -43,6 +43,8 @@ type destinationNode struct {
 	targetModel    string
 	protocol       string
 	apiKey         string
+	contextLength  int
+	capabilities   []string
 	isAlive        atomic.Bool
 	activeRequests atomic.Int32
 }
@@ -158,13 +160,15 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 		}
 
 		node := &destinationNode{
-			url:         u,
-			breaker:     gobreaker.NewCircuitBreaker(cbSettings),
-			weight:      w,
-			tags:        dest.Tags,
-			targetModel: dest.TargetModel,
-			protocol:    proto,
-			apiKey:      dest.ApiKey,
+			url:           u,
+			breaker:       gobreaker.NewCircuitBreaker(cbSettings),
+			weight:        w,
+			tags:          dest.Tags,
+			targetModel:   dest.TargetModel,
+			protocol:      proto,
+			apiKey:        dest.ApiKey,
+			contextLength: dest.ContextLength,
+			capabilities:  dest.Capabilities,
 		}
 		// Default to true so we don't drop requests before first ping returns
 		node.isAlive.Store(true)
