@@ -860,6 +860,12 @@ func pingNode(ctx context.Context, node *destinationNode, cfg config.HealthCheck
 	}
 
 	resp, err := client.Do(req)
+	
+	// If the context was canceled, don't update state. The goroutine is dying anyway.
+	if err != nil && ctx.Err() != nil {
+		return
+	}
+
 	aliveNow := err == nil && resp != nil && resp.StatusCode < 500
 
 	if resp != nil && resp.Body != nil {
