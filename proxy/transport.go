@@ -560,8 +560,9 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 
 			if resp != nil && resp.Body != nil {
-				isStreamResp := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
-					req.Header.Get("Accept") == "text/event-stream" || attemptReq.Header.Get("Accept") == "text/event-stream"
+				isStreamResp := resp.StatusCode == http.StatusOK && 
+					(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
+					req.Header.Get("Accept") == "text/event-stream" || attemptReq.Header.Get("Accept") == "text/event-stream")
 
 				var finalBody io.ReadCloser = resp.Body
 
