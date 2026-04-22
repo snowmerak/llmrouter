@@ -175,12 +175,20 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 	}
 
 	type showReq struct {
-		Name string `json:"name"`
+		Name  string `json:"name"`
+		Model string `json:"model"`
 	}
 	var reqBody showReq
-	json.Unmarshal(bodyBytes, &reqBody)
-
+	err := json.Unmarshal(bodyBytes, &reqBody)
+	if err != nil {
+		log.Printf("[ShowReq] unmarshal error: %v", err)
+	}
+	
 	queryName := reqBody.Name
+	if queryName == "" {
+		queryName = reqBody.Model
+	}
+	log.Printf("[ShowReq] body: %s, parsedName: '%s'", string(bodyBytes), queryName)
 	if strings.HasSuffix(queryName, ":latest") {
 		queryName = strings.TrimSuffix(queryName, ":latest")
 	}
