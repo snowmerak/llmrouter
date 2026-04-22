@@ -35,7 +35,7 @@ type ChatRequest struct {
 type ChatResponse struct {
 	ID      string   `json:"id,omitempty"`
 	Model   string   `json:"model,omitempty"`
-	Choices []Choice `json:"choices,omitempty"`
+	Choices []Choice `json:"choices"`
 }
 
 // Choice represents a single choice in a ChatResponse.
@@ -49,7 +49,7 @@ type Choice struct {
 type ChatStreamChunk struct {
 	ID      string         `json:"id,omitempty"`
 	Model   string         `json:"model,omitempty"`
-	Choices []StreamChoice `json:"choices,omitempty"`
+	Choices []StreamChoice `json:"choices"`
 }
 
 // StreamChoice represents a single choice in a ChatStreamChunk.

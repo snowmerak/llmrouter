@@ -51,6 +51,13 @@ func ParseStreamChunk(line []byte) (*schema.ChatStreamChunk, error) {
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return nil, err
 	}
+	
+	// Copilot crashes if it receives a chunk with no choices (e.g. usage-only chunks).
+	// We drop these chunks to prevent the 'Response contained no choices' error.
+	if len(chunk.Choices) == 0 {
+		return nil, nil
+	}
+	
 	return &chunk, nil
 }
 
