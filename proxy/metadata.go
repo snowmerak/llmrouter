@@ -138,13 +138,15 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 	}
 
 	type OllamaShowResponse struct {
-		License    string                 `json:"license"`
-		Modelfile  string                 `json:"modelfile"`
-		Parameters string                 `json:"parameters"`
-		Template   string                 `json:"template"`
-		System     string                 `json:"system"`
-		Details    OllamaModelDetails     `json:"details"`
-		ModelInfo  map[string]interface{} `json:"model_info"`
+		License      string                 `json:"license"`
+		Modelfile    string                 `json:"modelfile"`
+		Parameters   string                 `json:"parameters"`
+		Template     string                 `json:"template"`
+		System       string                 `json:"system"`
+		Details      OllamaModelDetails     `json:"details"`
+		ModelInfo    map[string]interface{} `json:"model_info"`
+		Capabilities []string               `json:"capabilities"`
+		ModifiedAt   string                 `json:"modified_at"`
 	}
 
 	resp := OllamaShowResponse{
@@ -165,6 +167,8 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 			"general.architecture": "llama",
 			"llama.context_length": 8192,
 		},
+		Capabilities: []string{"generate", "chat", "tools"},
+		ModifiedAt:   "2024-04-23T00:00:00Z",
 	}
 
 	b, _ := json.Marshal(resp)
