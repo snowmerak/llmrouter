@@ -363,33 +363,51 @@ func ParseStreamChunk(line []byte) (*schema.ChatStreamChunk, error) {
 	}
 	
 	msg := schema.Message{}
-	if len(vResp.Candidates) > 0 && vResp.Candidates[0].Content != nil {
-		var txtStr string
-		var toolCalls []schema.UniversalToolCall
-		
-		for _, part := range vResp.Candidates[0].Content.Parts {
-			if part.Text != "" {
-				txtStr += part.Text
+	var finishReason *string
+	
+	if len(vResp.Candidates) > 0 {
+		if vResp.Candidates[0].FinishReason != "" {
+			fr := vResp.Candidates[0].FinishReason
+			if fr == "STOP" {
+				fr = "stop"
 			}
-			if part.FunctionCall != nil {
-				argsBytes, _ := json.Marshal(part.FunctionCall.Args)
-				toolCalls = append(toolCalls, schema.UniversalToolCall{
-					ID: part.FunctionCall.Name,
-					Type: "function",
-					Function: schema.UniversalToolCallFunction{
-						Name: part.FunctionCall.Name,
-						Arguments: string(argsBytes),
-					},
-				})
-			}
+			finishReason = &fr
 		}
 		
-		if txtStr != "" {
-			msg.Content = &txtStr
+		if vResp.Candidates[0].Content != nil {
+			var txtStr string
+			var toolCalls []schema.UniversalToolCall
+			
+			for _, part := range vResp.Candidates[0].Content.Parts {
+				if part.Text != "" {
+					txtStr += part.Text
+				}
+				if part.FunctionCall != nil {
+					argsBytes, _ := json.Marshal(part.FunctionCall.Args)
+					toolCalls = append(toolCalls, schema.UniversalToolCall{
+						ID: part.FunctionCall.Name,
+						Type: "function",
+						Function: schema.UniversalToolCallFunction{
+							Name: part.FunctionCall.Name,
+							Arguments: string(argsBytes),
+						},
+					})
+				}
+			}
+			
+			if txtStr != "" {
+				msg.Content = &txtStr
+			}
+			if len(toolCalls) > 0 {
+				msg.ToolCalls = toolCalls
+			}
 		}
-		if len(toolCalls) > 0 {
-			msg.ToolCalls = toolCalls
-		}
+	}
+	
+	// If the chunk has NO content, NO tool calls, NO role, and NO finish reason, it's just a metadata/usage chunk.
+	// We MUST drop it, otherwise Copilot throws "Response contained no choices" when seeing empty delta.
+	if msg.Content == nil && len(msg.ToolCalls) == 0 && msg.Role == nil && finishReason == nil {
+		return nil, nil
 	}
 	
 	return &schema.ChatStreamChunk{
@@ -398,6 +416,7 @@ func ParseStreamChunk(line []byte) (*schema.ChatStreamChunk, error) {
 			{
 				Index: 0,
 				Delta: msg,
+				FinishReason: finishReason,
 			},
 		},
 	}, nil
