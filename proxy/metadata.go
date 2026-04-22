@@ -114,7 +114,7 @@ func (t *MultiTransport) handleOllamaTags(req *http.Request) (*http.Response, er
 }
 
 func (t *MultiTransport) handleOllamaVersion(req *http.Request) (*http.Response, error) {
-	resp := map[string]string{"version": "0.1.33"}
+	resp := map[string]string{"version": "0.21.0"}
 	b, _ := json.Marshal(resp)
 	return makeJSONResponse(b), nil
 }
