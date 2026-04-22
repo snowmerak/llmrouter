@@ -245,6 +245,29 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 
+	var embCtx *EmbeddingContext
+	if isEmbedding && requestedModel != "" {
+		var cachedResp *EmbeddingResponse
+		var newBodyBytes []byte
+		embCtx, newBodyBytes, cachedResp = ProcessEmbeddingRequest(bodyBytes, requestedModel)
+		
+		if cachedResp != nil {
+			// 100% Cache hit! Bypass proxy completely.
+			respBytes, _ := json.Marshal(cachedResp)
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Status:        "200 OK",
+				Body:          io.NopCloser(bytes.NewReader(respBytes)),
+				Header:        make(http.Header),
+				ContentLength: int64(len(respBytes)),
+			}, nil
+		}
+		
+		if newBodyBytes != nil {
+			bodyBytes = newBodyBytes
+		}
+	}
+
 	var requiredTag string
 	if !isMetadataRoute && requestedModel != "" {
 		requiredTag = requestedModel // Default to requested model as the tag
@@ -605,6 +628,14 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 									if node.protocol == "vertexai" && isEmbedding {
 										newRespBytes, err := vertexai.FromVertexEmbeddingResponse(bodyBytes, originalModel)
 										if err == nil {
+											if embCtx != nil {
+												mergedBytes, err := MergeEmbeddingResponse(embCtx, newRespBytes, requestedModel)
+												if err == nil {
+													newRespBytes = mergedBytes
+												} else {
+													log.Printf("[Proxy Error] Failed to merge embedding response: %v", err)
+												}
+											}
 											finalBody = io.NopCloser(bytes.NewReader(newRespBytes))
 											resp.ContentLength = int64(len(newRespBytes))
 											resp.Header.Set("Content-Length", strconv.Itoa(len(newRespBytes)))
@@ -617,6 +648,16 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 										log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming fast rewriter ('%s' -> '%s')", node.targetModel, originalModel)
 										replaced := bytes.Replace(bodyBytes, []byte(`"model":"`+node.targetModel+`"`), []byte(`"model":"`+originalModel+`"`), 1)
 										replaced = bytes.Replace(replaced, []byte(`"model": "`+node.targetModel+`"`), []byte(`"model": "`+originalModel+`"`), 1)
+										
+										if isEmbedding && embCtx != nil {
+											mergedBytes, err := MergeEmbeddingResponse(embCtx, replaced, requestedModel)
+											if err == nil {
+												replaced = mergedBytes
+											} else {
+												log.Printf("[Proxy Error] Failed to merge embedding response: %v", err)
+											}
+										}
+										
 										finalBody = io.NopCloser(bytes.NewReader(replaced))
 										resp.ContentLength = int64(len(replaced))
 										resp.Header.Set("Content-Length", strconv.Itoa(len(replaced)))
