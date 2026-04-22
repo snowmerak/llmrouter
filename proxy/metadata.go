@@ -183,14 +183,14 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 	if err != nil {
 		log.Printf("[ShowReq] unmarshal error: %v", err)
 	}
-	
+
 	queryName := reqBody.Name
 	if queryName == "" {
 		queryName = reqBody.Model
 	}
 	log.Printf("[ShowReq] body: %s, parsedName: '%s'", string(bodyBytes), queryName)
-	if strings.HasSuffix(queryName, ":latest") {
-		queryName = strings.TrimSuffix(queryName, ":latest")
+	if before, ok := strings.CutSuffix(queryName, ":latest"); ok {
+		queryName = before
 	}
 
 	ctxLength, caps := t.getModelMetadata(queryName)
@@ -237,7 +237,7 @@ func (t *MultiTransport) handleRootPing(req *http.Request) (*http.Response, erro
 
 func (t *MultiTransport) handleOpenAISingleModel(req *http.Request) (*http.Response, error) {
 	modelName := req.URL.Path[len("/v1/models/"):]
-	
+
 	models := t.getAllAvailableModels()
 	modelExists := false
 	for _, m := range models {

@@ -287,7 +287,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		var cachedResp *EmbeddingResponse
 		var newBodyBytes []byte
 		embCtx, newBodyBytes, cachedResp = ProcessEmbeddingRequest(bodyBytes, requestedModel)
-		
+
 		if cachedResp != nil {
 			// 100% Cache hit! Bypass proxy completely.
 			respBytes, _ := json.Marshal(cachedResp)
@@ -299,7 +299,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				ContentLength: int64(len(respBytes)),
 			}, nil
 		}
-		
+
 		if newBodyBytes != nil {
 			bodyBytes = newBodyBytes
 		}
@@ -349,7 +349,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 						continue
 					}
 				}
-				
+
 				// Group routing constraints
 				if requiredTag != "" {
 					hasRequiredTag := false
@@ -401,7 +401,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				return make429Response(), nil
 			}
 		}
-		
+
 		node := remainingNodes[idx]
 
 		// Remove the chosen node from remainingNodes for next iteration if this one fails
@@ -409,7 +409,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		// Clone request for this attempt
 		attemptReq := req.Clone(req.Context())
-		
+
 		var originalModel string
 		var finalModel string
 		attemptBodyBytes := bodyBytes
@@ -448,7 +448,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			} else {
 				log.Printf("[Proxy Error] Failed to marshal updated payload via adapter: %v", encodeErr)
 			}
-			
+
 			if node.protocol == "anthropic" {
 				if node.apiKey != "" {
 					attemptReq.Header.Set("x-api-key", node.apiKey)
@@ -502,7 +502,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			} else {
 				log.Printf("[Proxy Warning] Could not unmarshal request JSON for model replace: %v", err)
 			}
-			
+
 			if node.protocol == "vertexai" && isEmbedding {
 				newBody, err := vertexai.ToVertexEmbeddingRequest(attemptBodyBytes)
 				if err == nil {
@@ -554,7 +554,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			log.Printf("[Proxy Out] Starting request to %s (Path: %s)", node.url.Host, attemptReq.URL.Path)
 
 			resp, reqErr := t.baseTransport.RoundTrip(attemptReq)
-			
+
 			elapsed := time.Since(start)
 
 			modelName := originalModel
@@ -589,9 +589,9 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			metrics.RequestDuration.WithLabelValues(node.url.Host, modelName).Observe(elapsed.Seconds())
 
 			if resp != nil && resp.Body != nil {
-				isStreamResp := resp.StatusCode == http.StatusOK && 
+				isStreamResp := resp.StatusCode == http.StatusOK &&
 					(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
-					req.Header.Get("Accept") == "text/event-stream" || attemptReq.Header.Get("Accept") == "text/event-stream")
+						req.Header.Get("Accept") == "text/event-stream" || attemptReq.Header.Get("Accept") == "text/event-stream")
 
 				var finalBody io.ReadCloser = resp.Body
 
@@ -647,7 +647,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 								finalBody = io.NopCloser(bytes.NewReader(bodyBytes))
 							} else {
 								var universalResp *schema.ChatResponse
-								
+
 								if !isEmbedding {
 									if node.protocol == "anthropic" {
 										log.Printf("[Proxy Rewrite Adapter] Activating Anthropic non-streaming parser")
@@ -665,7 +665,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 									if universalResp.Model == node.targetModel {
 										universalResp.Model = originalModel
 									}
-									
+
 									var newBytes []byte
 									if frontendProtocol == "anthropic" {
 										newBytes, err = anthropic.FromUniversalResponse(universalResp)
@@ -704,7 +704,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 										log.Printf("[Proxy Rewrite Adapter] Activating OpenAI non-streaming fast rewriter ('%s' -> '%s')", node.targetModel, originalModel)
 										replaced := bytes.Replace(bodyBytes, []byte(`"model":"`+node.targetModel+`"`), []byte(`"model":"`+originalModel+`"`), 1)
 										replaced = bytes.Replace(replaced, []byte(`"model": "`+node.targetModel+`"`), []byte(`"model": "`+originalModel+`"`), 1)
-										
+
 										if isEmbedding && embCtx != nil {
 											mergedBytes, err := MergeEmbeddingResponse(embCtx, replaced, requestedModel)
 											if err == nil {
@@ -713,7 +713,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 												log.Printf("[Proxy Error] Failed to merge embedding response: %v", err)
 											}
 										}
-										
+
 										finalBody = io.NopCloser(bytes.NewReader(replaced))
 										resp.ContentLength = int64(len(replaced))
 										resp.Header.Set("Content-Length", strconv.Itoa(len(replaced)))
@@ -793,15 +793,15 @@ func hashRequest(ip string, model string, universalReq *schema.ChatRequest) uint
 	h.Write([]byte(model))
 
 	if universalReq != nil {
-		for _, msg := range universalReq.Messages {
+		for i, msg := range universalReq.Messages {
+			if i > 5 {
+				break
+			}
 			if msg.Role != nil {
 				h.Write([]byte(*msg.Role))
 			}
 			if msg.Content != nil {
 				h.Write([]byte(*msg.Content))
-			}
-			if msg.Role != nil && *msg.Role == schema.RoleUser {
-				break
 			}
 		}
 	}
@@ -891,7 +891,7 @@ func pingNode(ctx context.Context, node *destinationNode, cfg config.HealthCheck
 	}
 
 	resp, err := client.Do(req)
-	
+
 	// If the context was canceled, don't update state. The goroutine is dying anyway.
 	if err != nil && ctx.Err() != nil {
 		return
