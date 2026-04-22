@@ -88,6 +88,24 @@ destinations:
     context_length: 262144
     capabilities: ["generate", "chat", "tools"]
 
+  - url: "https://openrouter.ai"
+    protocol: "openai"
+    weight: 1
+    api_key: "{{env:OPENROUTER_API_KEY}}"
+    target_model: "moonshotai/kimi-k2.6"
+    tags: ["ultra"]
+    context_length: 128000
+    capabilities: ["generate", "chat", "tools"]
+
+  - url: "https://api.anthropic.com"
+    protocol: "anthropic"
+    weight: 1
+    api_key: "{{env:ANTHROPIC_API_KEY}}"
+    target_model: "claude-sonnet-4-6"
+    tags: ["agent"]
+    context_length: 200000
+    capabilities: ["generate", "chat", "tools"]
+
 health_check:
   enabled: true
   interval_secs: 10
