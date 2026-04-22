@@ -49,31 +49,44 @@ destinations:
   - url: "http://m4max128:1234"
     protocol: "openai"
     weight: 1
-    target_model: "qwen3.6-35b-a3b"
-    tags: ["super"]
-    context_length: 32768
-    capabilities: ["generate", "chat", "tools", "embedding"]
-
-  - url: "http://m4max128:1234"
-    protocol: "anthropic"
-    weight: 1
-    target_model: "gemma-4-26b-a4b-it-uncensored-max"
-    tags: ["light"]
+    target_model: "qwen3.6-27b-ud-mlx"
+    tags: ["expert"]
+    context_length: 131072
+    capabilities: ["generate", "chat", "tools"]
 
   - url: "http://m4max128:1234"
     protocol: "openai"
     weight: 1
-    target_model: "text-embedding-qwen3-embedding-0.6b"
-    tags: ["embedding"]
+    target_model: "qwen3.6-35b-a3b"
+    tags: ["general"]
+    context_length: 131072
+    capabilities: ["generate", "chat", "tools"]
 
-  # Example 4: Vertex AI / Google AI Studio Node
-  - url: "https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1"
+  - url: "http://m4max128:1234"
+    protocol: "openai"
+    weight: 1
+    target_model: "gemma-4-26b-a4b-it"
+    tags: ["fast"]
+    context_length: 131072
+    capabilities: ["generate", "chat", "tools"]
+
+  - url: "http://m4max128:1234"
+    protocol: "openai"
+    weight: 1
+    target_model: "gemma-4-31b-it"
+    tags: ["writer"]
+    context_length: 131072
+    capabilities: ["generate", "chat", "tools"]
+
+  - url: "https://us-central1-aiplatform.googleapis.com/v1/projects/saturday-networks/locations/us-central1"
     # Or for AI Studio: url: "https://generativelanguage.googleapis.com/v1beta"
     protocol: "vertexai"
     weight: 1
     # api_key: "{{env:GEMINI_API_KEY}}" # Uncomment to use API Key instead of ADC
-    target_model: "gemini-2.5-pro"
+    target_model: "gemini-2.5-pro" 
     tags: ["gemini"]
+    context_length: 262144
+    capabilities: ["generate", "chat", "tools"]
 
 health_check:
   enabled: true
