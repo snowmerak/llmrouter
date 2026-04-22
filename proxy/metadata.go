@@ -98,15 +98,15 @@ func (t *MultiTransport) handleOllamaTags(req *http.Request) (*http.Response, er
 			Name:       m,
 			Model:      m,
 			ModifiedAt: "2024-04-23T00:00:00Z",
-			Size:       0,
+			Size:       8000000000,
 			Digest:     "llmrouter-virtual-model",
 			Details: OllamaModelDetails{
 				ParentModel:       "",
-				Format:            "virtual",
-				Family:            "router",
-				Families:          []string{"router"},
-				ParameterSize:     "unknown",
-				QuantizationLevel: "none",
+				Format:            "gguf",
+				Family:            "llama",
+				Families:          []string{"llama"},
+				ParameterSize:     "8B",
+				QuantizationLevel: "Q4_0",
 			},
 		})
 	}
@@ -138,24 +138,28 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 	}
 
 	type OllamaShowResponse struct {
+		License    string                 `json:"license"`
 		Modelfile  string                 `json:"modelfile"`
 		Parameters string                 `json:"parameters"`
 		Template   string                 `json:"template"`
+		System     string                 `json:"system"`
 		Details    OllamaModelDetails     `json:"details"`
 		ModelInfo  map[string]interface{} `json:"model_info"`
 	}
 
 	resp := OllamaShowResponse{
-		Modelfile:  "# Virtual Model managed by LLMRouter\nFROM llmrouter",
+		License:    "MIT",
+		Modelfile:  "FROM llama\nTEMPLATE \"{{ .Prompt }}\"",
 		Parameters: "",
 		Template:   "{{ .Prompt }}",
+		System:     "You are a helpful AI assistant.",
 		Details: OllamaModelDetails{
 			ParentModel:       "",
-			Format:            "virtual",
-			Family:            "router",
-			Families:          []string{"router"},
-			ParameterSize:     "unknown",
-			QuantizationLevel: "none",
+			Format:            "gguf",
+			Family:            "llama",
+			Families:          []string{"llama"},
+			ParameterSize:     "8B",
+			QuantizationLevel: "Q4_0",
 		},
 		ModelInfo: map[string]interface{}{
 			"general.architecture": "llama",
