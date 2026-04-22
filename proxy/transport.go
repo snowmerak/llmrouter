@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
@@ -317,15 +318,33 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		copy(remainingNodes, t.destinations)
 	}
 
+	var hashVal uint32
+	useHashRouting := !isMetadataRoute && universalReq != nil
+	if useHashRouting {
+		hashVal = hashRequest(getClientIP(req), requestedModel, universalReq)
+	}
+
 	for len(remainingNodes) > 0 {
-		idx := selectLeastUtilized(remainingNodes, isMetadataRoute)
-		if idx == -1 {
-			// Fast fail: all alive nodes are at max capacity
-			return make429Response(), nil
+		var idx int
+		if useHashRouting {
+			idx = int(hashVal) % len(remainingNodes)
+			node := remainingNodes[idx]
+			if node.activeRequests.Load() >= int32(node.weight) {
+				// Node is at max capacity, fallback to next deterministic node by shrinking slice
+				remainingNodes = append(remainingNodes[:idx], remainingNodes[idx+1:]...)
+				continue
+			}
+		} else {
+			idx = selectLeastUtilized(remainingNodes, isMetadataRoute)
+			if idx == -1 {
+				// Fast fail: all alive nodes are at max capacity
+				return make429Response(), nil
+			}
 		}
+		
 		node := remainingNodes[idx]
 
-		// Remove the chosen node from remainingNodes
+		// Remove the chosen node from remainingNodes for next iteration if this one fails
 		remainingNodes = append(remainingNodes[:idx], remainingNodes[idx+1:]...)
 
 		// Clone request for this attempt
@@ -653,6 +672,41 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, lastErr
 	}
 	return make429Response(), nil
+}
+
+func getClientIP(req *http.Request) string {
+	ip := req.Header.Get("X-Forwarded-For")
+	if ip == "" {
+		ip = req.Header.Get("X-Real-IP")
+	}
+	if ip == "" {
+		ip = req.RemoteAddr
+	}
+	if parts := strings.Split(ip, ","); len(parts) > 0 {
+		return strings.TrimSpace(parts[0])
+	}
+	return ip
+}
+
+func hashRequest(ip string, model string, universalReq *schema.ChatRequest) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(ip))
+	h.Write([]byte(model))
+
+	if universalReq != nil {
+		for _, msg := range universalReq.Messages {
+			if msg.Role != nil {
+				h.Write([]byte(*msg.Role))
+			}
+			if msg.Content != nil {
+				h.Write([]byte(*msg.Content))
+			}
+			if msg.Role != nil && *msg.Role == schema.RoleUser {
+				break
+			}
+		}
+	}
+	return h.Sum32()
 }
 
 func selectLeastUtilized(nodes []*destinationNode, bypassWeight bool) int {
