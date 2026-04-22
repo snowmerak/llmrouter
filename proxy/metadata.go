@@ -68,6 +68,7 @@ func (t *MultiTransport) handleOllamaTags(req *http.Request) (*http.Response, er
 	models := t.getAllAvailableModels()
 
 	type OllamaModelDetails struct {
+		ParentModel       string   `json:"parent_model"`
 		Format            string   `json:"format"`
 		Family            string   `json:"family"`
 		Families          []string `json:"families"`
@@ -100,6 +101,7 @@ func (t *MultiTransport) handleOllamaTags(req *http.Request) (*http.Response, er
 			Size:       0,
 			Digest:     "llmrouter-virtual-model",
 			Details: OllamaModelDetails{
+				ParentModel:       "",
 				Format:            "virtual",
 				Family:            "router",
 				Families:          []string{"router"},
@@ -127,6 +129,7 @@ func (t *MultiTransport) handleOllamaPs(req *http.Request) (*http.Response, erro
 
 func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (*http.Response, error) {
 	type OllamaModelDetails struct {
+		ParentModel       string   `json:"parent_model"`
 		Format            string   `json:"format"`
 		Family            string   `json:"family"`
 		Families          []string `json:"families"`
@@ -135,10 +138,11 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 	}
 
 	type OllamaShowResponse struct {
-		Modelfile  string             `json:"modelfile"`
-		Parameters string             `json:"parameters"`
-		Template   string             `json:"template"`
-		Details    OllamaModelDetails `json:"details"`
+		Modelfile  string                 `json:"modelfile"`
+		Parameters string                 `json:"parameters"`
+		Template   string                 `json:"template"`
+		Details    OllamaModelDetails     `json:"details"`
+		ModelInfo  map[string]interface{} `json:"model_info"`
 	}
 
 	resp := OllamaShowResponse{
@@ -146,11 +150,16 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 		Parameters: "",
 		Template:   "{{ .Prompt }}",
 		Details: OllamaModelDetails{
+			ParentModel:       "",
 			Format:            "virtual",
 			Family:            "router",
 			Families:          []string{"router"},
 			ParameterSize:     "unknown",
 			QuantizationLevel: "none",
+		},
+		ModelInfo: map[string]interface{}{
+			"general.architecture": "llama",
+			"llama.context_length": 8192,
 		},
 	}
 
