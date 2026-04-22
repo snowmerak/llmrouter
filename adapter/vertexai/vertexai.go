@@ -54,6 +54,28 @@ type VertexResponse struct {
 	Candidates []Candidate `json:"candidates,omitempty"`
 }
 
+// sanitizeVertexParameters recursively removes unsupported JSON schema keys from tool parameters.
+// Vertex AI STRICTLY rejects keys like "$comment" and "enumDescriptions".
+func sanitizeVertexParameters(params map[string]interface{}) {
+	if params == nil {
+		return
+	}
+	delete(params, "$comment")
+	delete(params, "enumDescriptions")
+
+	for _, v := range params {
+		if subMap, ok := v.(map[string]interface{}); ok {
+			sanitizeVertexParameters(subMap)
+		} else if subSlice, ok := v.([]interface{}); ok {
+			for _, item := range subSlice {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					sanitizeVertexParameters(itemMap)
+				}
+			}
+		}
+	}
+}
+
 func FromUniversalRequest(req *schema.ChatRequest) ([]byte, error) {
 	vReq := VertexRequest{}
 	
@@ -69,7 +91,11 @@ func FromUniversalRequest(req *schema.ChatRequest) ([]byte, error) {
 		var decls []schema.UniversalFunction
 		for _, tool := range req.Tools {
 			if tool.Type == "function" {
-				decls = append(decls, tool.Function)
+				fn := tool.Function
+				if fn.Parameters != nil {
+					sanitizeVertexParameters(fn.Parameters)
+				}
+				decls = append(decls, fn)
 			}
 		}
 		if len(decls) > 0 {
