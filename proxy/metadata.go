@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func (t *MultiTransport) getAllAvailableModels() []string {
@@ -45,10 +47,12 @@ func (t *MultiTransport) getModelMetadata(modelName string) (int, []string) {
 				if len(dest.capabilities) > 0 {
 					caps = dest.capabilities
 				}
+				log.Printf("[Metadata] Matched tag '%s' -> ContextLength: %d, Caps: %v", modelName, ctxLength, caps)
 				return ctxLength, caps
 			}
 		}
 	}
+	log.Printf("[Metadata] Unmatched tag '%s' -> Fallback ContextLength: %d", modelName, ctxLength)
 	return ctxLength, caps
 }
 
@@ -118,7 +122,7 @@ func (t *MultiTransport) handleOllamaTags(req *http.Request) (*http.Response, er
 		resp.Models = append(resp.Models, OllamaModel{
 			Name:       m,
 			Model:      m,
-			ModifiedAt: "2024-04-23T00:00:00Z",
+			ModifiedAt: time.Now().Format(time.RFC3339),
 			Size:       8000000000,
 			Digest:     "llmrouter-virtual-model",
 			Details: OllamaModelDetails{
@@ -198,11 +202,14 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 			QuantizationLevel: "Q4_0",
 		},
 		ModelInfo: map[string]interface{}{
-			"general.architecture": "llama",
-			"llama.context_length": ctxLength,
+			"general.architecture":    "llama",
+			"general.name":            queryName,
+			"general.parameter_count": 8000000000,
+			"general.context_length":  ctxLength,
+			"llama.context_length":    ctxLength,
 		},
 		Capabilities: caps,
-		ModifiedAt:   "2024-04-23T00:00:00Z",
+		ModifiedAt:   time.Now().Format(time.RFC3339),
 	}
 
 	b, _ := json.Marshal(resp)
