@@ -203,10 +203,32 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		req.Body.Close()
 	}
 
-	isMetadataRoute := strings.HasPrefix(req.URL.Path, "/api/tags") || 
-						strings.HasPrefix(req.URL.Path, "/api/show") || 
-						strings.HasPrefix(req.URL.Path, "/api/version") || 
-						strings.HasPrefix(req.URL.Path, "/api/ps")
+	// Native Interceptors for Metadata APIs
+	if req.Method == http.MethodGet {
+		if req.URL.Path == "/" || req.URL.Path == "" {
+			return t.handleRootPing(req)
+		}
+		if req.URL.Path == "/v1/models" {
+			return t.handleOpenAIModels(req)
+		}
+		if strings.HasPrefix(req.URL.Path, "/v1/models/") {
+			return t.handleOpenAISingleModel(req)
+		}
+		if req.URL.Path == "/api/tags" {
+			return t.handleOllamaTags(req)
+		}
+		if req.URL.Path == "/api/version" {
+			return t.handleOllamaVersion(req)
+		}
+		if req.URL.Path == "/api/ps" {
+			return t.handleOllamaPs(req)
+		}
+	}
+	if req.Method == http.MethodPost && req.URL.Path == "/api/show" {
+		return t.handleOllamaShow(req, bodyBytes)
+	}
+
+	isMetadataRoute := false
 
 	var frontendProtocol string
 	if strings.HasPrefix(req.URL.Path, "/v1/messages") {
