@@ -167,7 +167,7 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 			"general.architecture": "llama",
 			"llama.context_length": 8192,
 		},
-		Capabilities: []string{"generate", "chat", "tools"},
+		Capabilities: []string{"generate", "chat", "tools", "embedding"},
 		ModifiedAt:   "2024-04-23T00:00:00Z",
 	}
 
