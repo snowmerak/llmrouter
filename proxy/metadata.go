@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 )
 
 func (t *MultiTransport) getAllAvailableModels() []string {
@@ -175,7 +176,12 @@ func (t *MultiTransport) handleOllamaShow(req *http.Request, bodyBytes []byte) (
 	var reqBody showReq
 	json.Unmarshal(bodyBytes, &reqBody)
 
-	ctxLength, caps := t.getModelMetadata(reqBody.Name)
+	queryName := reqBody.Name
+	if strings.HasSuffix(queryName, ":latest") {
+		queryName = strings.TrimSuffix(queryName, ":latest")
+	}
+
+	ctxLength, caps := t.getModelMetadata(queryName)
 
 	resp := OllamaShowResponse{
 		License:    "MIT",
