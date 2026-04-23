@@ -136,14 +136,27 @@ circuit_breaker:
 
 > **💡 Environment Variables:** You can dynamically inject OS environment variables anywhere in the `config.yaml` using the `{{env:VAR_NAME}}` syntax. This is particularly useful for keeping secrets like `api_key` or `url` out of source control.
 
-### 3. Running the Router
+### 3. Security & Authentication
+
+LLM Router provides a stateless, high-performance authentication system using BLAKE3 hashing.
+
+1. **Enable Authentication:** Set `auth.enabled: true` and configure a highly secure `master_key` in `config.yaml`.
+2. **Generate API Keys:** Run `llmrouter --gen-key="client-name"` to deterministically generate an API key tied to your master key. Distribute this key to your clients (e.g., `sk-client-name-pepp-1a2b3c4d...`).
+3. **Stateless Blocklist (`revoked.yaml`):** If an API key is leaked, you can revoke it instantly *without* changing the master key or restarting the server. Simply add the leaked key to `revoked.yaml`:
+   ```yaml
+   revoked_keys:
+     - "sk-leaked-client-key-pepp-..."
+   ```
+   The router monitors `revoked.yaml` using `fsnotify` and hot-reloads the blocklist with zero downtime.
+
+### 4. Running the Router
 
 ```bash
 llmrouter
 ```
-The router will hot-reload automatically if `config.yaml` is modified during runtime.
+The router will hot-reload automatically if `config.yaml` or `revoked.yaml` is modified during runtime.
 
-### 4. Client Usage
+### 5. Client Usage
 
 You can use the official OpenAI or Anthropic SDKs. Simply change the base URL to point to the router and specify the `tag` as the model name.
 

@@ -60,9 +60,16 @@ func main() {
 
 	if initFlag || initFlagShort {
 		if err := os.WriteFile("config.yaml", []byte(defaultConfig), 0644); err != nil {
-			log.Fatalf("Failed to write default config.yaml: %v", err)
+			log.Fatalf("Failed to write config.yaml: %v", err)
 		}
 		fmt.Println("Generated default config.yaml")
+
+		revokedTemplate := "revoked_keys:\n  # - \"sk-leaked-client-key\"\n"
+		if err := os.WriteFile("revoked.yaml", []byte(revokedTemplate), 0644); err != nil {
+			log.Printf("Warning: Failed to write revoked.yaml template: %v", err)
+		} else {
+			fmt.Println("Generated default revoked.yaml")
+		}
 		return
 	}
 
@@ -94,6 +101,14 @@ func main() {
 	}
 
 	ollamaProxy, reloadableTransport := proxy.NewOllamaProxy(cfg)
+
+	// Initialize and load Revocation Manager
+	revocationManager := auth.NewRevocationManager()
+	revocationFile := "revoked.yaml"
+	if err := revocationManager.LoadFile(revocationFile); err != nil && !os.IsNotExist(err) {
+		log.Printf("Warning: Failed to load %s: %v", revocationFile, err)
+	}
+	revocationManager.WatchFile(revocationFile)
 
 	// Start a background goroutine that listens to config.yaml changes.
 	// When changed, parse the config and swap out the transport internally.
@@ -128,6 +143,13 @@ func main() {
 				apiKey = strings.TrimPrefix(authHeader, "Bearer ")
 			} else {
 				apiKey = r.Header.Get("x-api-key")
+			}
+
+			if apiKey != "" && revocationManager.IsRevoked(apiKey) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error": {"message": "API Key is revoked", "type": "invalid_request_error"}}`))
+				return
 			}
 
 			clientID := "anonymous"

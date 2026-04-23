@@ -9,6 +9,7 @@ require (
 	github.com/sony/gobreaker v1.0.0
 	golang.org/x/oauth2 v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
+	lukechampine.com/blake3 v1.4.1
 )
 
 require (
@@ -26,5 +27,4 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/sys v0.35.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
-	lukechampine.com/blake3 v1.4.1 // indirect
 )
