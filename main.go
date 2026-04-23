@@ -18,6 +18,10 @@ import (
 const defaultConfig = `server:
   port: 11656
 
+auth:
+  enabled: true
+  master_key: "CHANGE_THIS_TO_A_SECURE_RANDOM_STRING_OR_USE_ENV_VAR"
+
 destinations:
   - url: "http://localhost:11434"
     protocol: "openai"
@@ -26,6 +30,7 @@ destinations:
     tags: ["llama3"]
     context_length: 32768
     capabilities: ["generate", "chat", "tools", "embedding"]
+    auth_required: false # Set to true to require API key for this node. If omitted, defaults to true for security.
 
 metrics:
   enabled: true

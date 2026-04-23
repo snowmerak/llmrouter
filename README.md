@@ -45,6 +45,10 @@ This will create a `config.yaml` file in the root directory with the following s
 server:
   port: 11656
 
+auth:
+  enabled: true
+  master_key: "{{env:ROUTER_MASTER_KEY}}"
+
 destinations:
   - url: "http://m4max128:1234"
     protocol: "openai"
@@ -53,6 +57,7 @@ destinations:
     tags: ["expert"]
     context_length: 131072
     capabilities: ["generate", "chat", "tools"]
+    auth_required: false # Allow anonymous access for local node. If omitted, defaults to true for security.
 
   - url: "http://m4max128:1234"
     protocol: "openai"
@@ -61,6 +66,7 @@ destinations:
     tags: ["general"]
     context_length: 131072
     capabilities: ["generate", "chat", "tools"]
+    auth_required: false
 
   - url: "http://m4max128:1234"
     protocol: "openai"
@@ -69,6 +75,7 @@ destinations:
     tags: ["fast"]
     context_length: 131072
     capabilities: ["generate", "chat", "tools"]
+    auth_required: false
 
   - url: "http://m4max128:1234"
     protocol: "openai"
@@ -77,6 +84,7 @@ destinations:
     tags: ["writer"]
     context_length: 131072
     capabilities: ["generate", "chat", "tools"]
+    auth_required: false
 
   - url: "https://us-central1-aiplatform.googleapis.com/v1/projects/saturday-networks/locations/us-central1"
     # Or for AI Studio: url: "https://generativelanguage.googleapis.com/v1beta"
@@ -87,6 +95,7 @@ destinations:
     tags: ["gemini"]
     context_length: 262144
     capabilities: ["generate", "chat", "tools"]
+    auth_required: true # Require client to provide an API key for Vertex AI
 
   - url: "https://openrouter.ai"
     protocol: "openai"
@@ -96,6 +105,7 @@ destinations:
     tags: ["ultra"]
     context_length: 128000
     capabilities: ["generate", "chat", "tools"]
+    auth_required: true
 
   - url: "https://api.anthropic.com"
     protocol: "anthropic"
@@ -105,6 +115,7 @@ destinations:
     tags: ["agent"]
     context_length: 200000
     capabilities: ["generate", "chat", "tools"]
+    auth_required: true
 
 metrics:
   enabled: true
