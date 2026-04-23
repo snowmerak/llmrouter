@@ -125,19 +125,16 @@ func main() {
 				apiKey = r.Header.Get("x-api-key")
 			}
 
-			if apiKey == "" {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error": {"message": "Missing API Key", "type": "invalid_request_error"}}`))
-				return
-			}
-
-			clientID, err := auth.ValidateKey(apiKey, cfg.Auth.MasterKey)
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error": {"message": "Invalid API Key", "type": "invalid_request_error"}}`))
-				return
+			clientID := "anonymous"
+			if apiKey != "" {
+				id, err := auth.ValidateKey(apiKey, cfg.Auth.MasterKey)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					w.Write([]byte(`{"error": {"message": "Invalid API Key", "type": "invalid_request_error"}}`))
+					return
+				}
+				clientID = id
 			}
 
 			ctx := context.WithValue(r.Context(), auth.ClientIDKey{}, clientID)

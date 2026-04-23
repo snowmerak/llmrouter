@@ -12,12 +12,13 @@ import (
 type Destination struct {
 	URL           string   `yaml:"url"`
 	Protocol      string   `yaml:"protocol"`
-	ApiKey        string   `yaml:"api_key"`
 	Weight        int      `yaml:"weight"`
-	Tags          []string `yaml:"tags"`
 	TargetModel   string   `yaml:"target_model"`
+	Tags          []string `yaml:"tags"`
 	ContextLength int      `yaml:"context_length"`
 	Capabilities  []string `yaml:"capabilities"`
+	APIKey        string   `yaml:"api_key"` // API key for external providers (e.g. Anthropic, Vertex AI)
+	AuthRequired  *bool    `yaml:"auth_required"`
 }
 
 type HealthCheck struct {

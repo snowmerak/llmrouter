@@ -39,16 +39,17 @@ type MultiTransport struct {
 
 type destinationNode struct {
 	url            *url.URL
-	breaker        *gobreaker.CircuitBreaker
-	weight         int
-	tags           []string
-	targetModel    string
 	protocol       string
 	apiKey         string
+	weight         int
+	activeRequests atomic.Int32
+	isAlive        atomic.Bool
+	targetModel    string
+	tags           []string
+	breaker        *gobreaker.CircuitBreaker
 	contextLength  int
 	capabilities   []string
-	isAlive        atomic.Bool
-	activeRequests atomic.Int32
+	authRequired   bool
 }
 
 type trackingReadCloser struct {
@@ -171,6 +172,11 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 			proto = "openai" // default fallback
 		}
 
+		authReq := true
+		if dest.AuthRequired != nil {
+			authReq = *dest.AuthRequired
+		}
+
 		node := &destinationNode{
 			url:           u,
 			breaker:       gobreaker.NewCircuitBreaker(cbSettings),
@@ -178,9 +184,10 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 			tags:          dest.Tags,
 			targetModel:   dest.TargetModel,
 			protocol:      proto,
-			apiKey:        dest.ApiKey,
+			apiKey:        dest.APIKey,
 			contextLength: dest.ContextLength,
 			capabilities:  dest.Capabilities,
+			authRequired:  authReq,
 		}
 		// Default to true so we don't drop requests before first ping returns
 		node.isAlive.Store(true)
@@ -316,10 +323,16 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 
+	clientID := "anonymous"
+	if id, ok := req.Context().Value(auth.ClientIDKey{}).(string); ok && id != "" {
+		clientID = id
+	}
+
 	var lastErr error
 
 	// Filter nodes to only alive ones
 	var remainingNodes []*destinationNode
+	var authDeniedCount int
 	isOllamaRoute := strings.HasPrefix(req.URL.Path, "/api/")
 
 	for _, n := range t.destinations {
@@ -365,6 +378,12 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					}
 				}
 			}
+			
+			if n.authRequired && clientID == "anonymous" {
+				authDeniedCount++
+				continue
+			}
+			
 			remainingNodes = append(remainingNodes, n)
 		}
 	}
@@ -372,11 +391,28 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Fallback to trying all nodes blindly if ping logic deemed them ALL dead
 	// but respect 502 logic if there are no available tagged nodes.
 	if len(remainingNodes) == 0 && len(t.destinations) > 0 {
+		if authDeniedCount > 0 {
+			return make401Response(), nil
+		}
 		if isOllamaRoute || requiredTag != "" {
 			return make502Response(), nil
 		}
+		
 		remainingNodes = make([]*destinationNode, len(t.destinations))
 		copy(remainingNodes, t.destinations)
+		
+		var fallbackFiltered []*destinationNode
+		for _, n := range remainingNodes {
+			if n.authRequired && clientID == "anonymous" {
+				authDeniedCount++
+				continue
+			}
+			fallbackFiltered = append(fallbackFiltered, n)
+		}
+		if len(fallbackFiltered) == 0 {
+			return make401Response(), nil
+		}
+		remainingNodes = fallbackFiltered
 	}
 
 	var hashVal uint32
@@ -844,6 +880,16 @@ func selectLeastUtilized(nodes []*destinationNode, bypassWeight bool) int {
 		}
 	}
 	return bestIdx
+}
+
+func make401Response() *http.Response {
+	bodyMsg := []byte(`{"error": {"message": "Unauthorized: API Key is required for this destination.", "type": "invalid_request_error"}}`)
+	return &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Status:     "401 Unauthorized",
+		Body:       io.NopCloser(bytes.NewReader(bodyMsg)),
+		Header:     make(http.Header),
+	}
 }
 
 func make429Response() *http.Response {
