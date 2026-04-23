@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/snowmerak/llmrouter/adapter/anthropic"
+	"github.com/snowmerak/llmrouter/adapter/ollama"
 	"github.com/snowmerak/llmrouter/adapter/openai"
 	"github.com/snowmerak/llmrouter/adapter/vertexai"
 	"github.com/snowmerak/llmrouter/auth"
@@ -100,7 +101,7 @@ func (r *unifiedStreamRewriter) Read(p []byte) (n int, err error) {
 				chunk.Model = r.originalModel
 			}
 			formatted, formatErr := r.formatter(chunk, false)
-			if formatErr == nil && formatted != nil {
+			if formatErr == nil && len(formatted) > 0 {
 				r.buf.Write(formatted)
 			}
 		}
@@ -256,6 +257,8 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var frontendProtocol string
 	if strings.HasPrefix(req.URL.Path, "/v1/messages") {
 		frontendProtocol = "anthropic"
+	} else if strings.HasPrefix(req.URL.Path, "/api/") {
+		frontendProtocol = "ollama"
 	} else {
 		frontendProtocol = "openai" // default fallback
 	}
@@ -272,6 +275,8 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if !isEmbedding {
 			if frontendProtocol == "anthropic" {
 				parsedReq, err = anthropic.ToUniversalRequest(bodyBytes)
+			} else if frontendProtocol == "ollama" {
+				parsedReq, err = ollama.ToUniversalRequest(bodyBytes)
 			} else {
 				parsedReq, err = openai.ToUniversalRequest(bodyBytes)
 			}
@@ -351,19 +356,6 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				}
 			} else {
 				// Base routing constraints
-				if isOllamaRoute {
-					hasOllamaTag := false
-					for _, tag := range n.tags {
-						if tag == "ollama" {
-							hasOllamaTag = true
-							break
-						}
-					}
-					if !hasOllamaTag {
-						continue
-					}
-				}
-
 				// Group routing constraints
 				if requiredTag != "" {
 					hasRequiredTag := false
@@ -664,6 +656,8 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 					if frontendProtocol == "anthropic" {
 						formatter = anthropic.FormatStreamChunk
+					} else if frontendProtocol == "ollama" {
+						formatter = ollama.FormatStreamChunk
 					} else {
 						formatter = openai.FormatStreamChunk
 					}
@@ -676,6 +670,14 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 							originalModel: originalModel,
 							parser:        parser,
 							formatter:     formatter,
+						}
+						
+						// Overwrite headers to match frontend protocol
+						resp.Header.Del("Content-Length")
+						if frontendProtocol == "ollama" {
+							resp.Header.Set("Content-Type", "application/x-ndjson")
+						} else {
+							resp.Header.Set("Content-Type", "text/event-stream; charset=utf-8")
 						}
 					}
 				} else {
@@ -711,6 +713,9 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 									var newBytes []byte
 									if frontendProtocol == "anthropic" {
 										newBytes, err = anthropic.FromUniversalResponse(universalResp)
+									} else if frontendProtocol == "ollama" {
+										newBytes, err = ollama.FromUniversalResponse(universalResp)
+										resp.Header.Set("Content-Type", "application/json")
 									} else {
 										newBytes, err = openai.FromUniversalResponse(universalResp)
 									}

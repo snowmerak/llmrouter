@@ -17,6 +17,7 @@ LLM Router is a high-performance, reverse-proxy based API Gateway designed to un
 | :------------------ | :----------------------------: | :---------------------------: |
 | `openai`            |   ✅ (`/v1/chat/completions`)   |               ✅               |
 | `anthropic`         |       ✅ (`/v1/messages`)       |               ✅               |
+| `ollama`            |       ✅ (`/api/chat`)          |               ❌               |
 | `vertexai`          |      ❌ (Not Recommended)       |         ✅ (REST API)          |
 
 ## 🛠️ Getting Started
