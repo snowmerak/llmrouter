@@ -10,9 +10,9 @@ var (
 	RequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmrouter_requests_total",
-			Help: "Total number of HTTP requests processed, labeled by node, model, and status.",
+			Help: "Total number of HTTP requests processed, labeled by node, model, status, and client_id.",
 		},
-		[]string{"node", "model", "status"},
+		[]string{"node", "model", "status", "client_id"},
 	)
 
 	// RequestDuration tracks the latency of requests to backends.
@@ -22,7 +22,7 @@ var (
 			Help:    "Histogram of response latency (seconds) of LLM requests.",
 			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 20, 30, 60, 120},
 		},
-		[]string{"node", "model"},
+		[]string{"node", "model", "client_id"},
 	)
 
 	// ActiveRequests tracks the current number of in-flight requests per node.
@@ -48,8 +48,8 @@ var (
 	TokenUsageTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmrouter_token_usage_total",
-			Help: "Total number of tokens processed, labeled by node, model, and type (prompt/completion).",
+			Help: "Total number of tokens processed, labeled by node, model, type (prompt/completion), and client_id.",
 		},
-		[]string{"node", "model", "type"},
+		[]string{"node", "model", "type", "client_id"},
 	)
 )

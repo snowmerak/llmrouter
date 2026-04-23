@@ -42,9 +42,15 @@ type Metrics struct {
 	Port    int  `yaml:"port"`
 }
 
+type Auth struct {
+	Enabled   bool   `yaml:"enabled"`
+	MasterKey string `yaml:"master_key"`
+}
+
 type Config struct {
 	Server         Server            `yaml:"server"`
 	Metrics        Metrics           `yaml:"metrics"`
+	Auth           Auth              `yaml:"auth"`
 	HealthCheck    HealthCheck       `yaml:"health_check"`
 	Destinations   []Destination     `yaml:"destinations"`
 	CircuitBreaker CircuitBreaker    `yaml:"circuit_breaker"`

@@ -19,6 +19,7 @@ import (
 	"github.com/snowmerak/llmrouter/adapter/anthropic"
 	"github.com/snowmerak/llmrouter/adapter/openai"
 	"github.com/snowmerak/llmrouter/adapter/vertexai"
+	"github.com/snowmerak/llmrouter/auth"
 	"github.com/snowmerak/llmrouter/config"
 	"github.com/snowmerak/llmrouter/metrics"
 	"github.com/snowmerak/llmrouter/schema"
@@ -562,12 +563,17 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				modelName = finalModel
 			}
 
+			clientID := "anonymous"
+			if id, ok := req.Context().Value(auth.ClientIDKey{}).(string); ok && id != "" {
+				clientID = id
+			}
+
 			if reqErr != nil {
 				log.Printf("[Proxy Error] Request to %s failed after %v: %v", node.url.Host, elapsed, reqErr)
 				node.activeRequests.Add(-1)
 				metrics.ActiveRequests.WithLabelValues(node.url.Host).Dec()
-				metrics.RequestsTotal.WithLabelValues(node.url.Host, modelName, "error").Inc()
-				metrics.RequestDuration.WithLabelValues(node.url.Host, modelName).Observe(elapsed.Seconds())
+				metrics.RequestsTotal.WithLabelValues(node.url.Host, modelName, "error", clientID).Inc()
+				metrics.RequestDuration.WithLabelValues(node.url.Host, modelName, clientID).Observe(elapsed.Seconds())
 				return resp, reqErr
 			}
 
@@ -580,13 +586,13 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				// We return error to trip the breaker, wrapper handles response
 				node.activeRequests.Add(-1)
 				metrics.ActiveRequests.WithLabelValues(node.url.Host).Dec()
-				metrics.RequestsTotal.WithLabelValues(node.url.Host, modelName, strconv.Itoa(resp.StatusCode)).Inc()
-				metrics.RequestDuration.WithLabelValues(node.url.Host, modelName).Observe(elapsed.Seconds())
+				metrics.RequestsTotal.WithLabelValues(node.url.Host, modelName, strconv.Itoa(resp.StatusCode), clientID).Inc()
+				metrics.RequestDuration.WithLabelValues(node.url.Host, modelName, clientID).Observe(elapsed.Seconds())
 				return resp, http.ErrServerClosed // fake error to register failure
 			}
 
-			metrics.RequestsTotal.WithLabelValues(node.url.Host, modelName, strconv.Itoa(resp.StatusCode)).Inc()
-			metrics.RequestDuration.WithLabelValues(node.url.Host, modelName).Observe(elapsed.Seconds())
+			metrics.RequestsTotal.WithLabelValues(node.url.Host, modelName, strconv.Itoa(resp.StatusCode), clientID).Inc()
+			metrics.RequestDuration.WithLabelValues(node.url.Host, modelName, clientID).Observe(elapsed.Seconds())
 
 			if resp != nil && resp.Body != nil {
 				isStreamResp := resp.StatusCode == http.StatusOK &&

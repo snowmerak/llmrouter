@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/snowmerak/llmrouter/auth"
 	"github.com/snowmerak/llmrouter/config"
 	"github.com/snowmerak/llmrouter/proxy"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const defaultConfig = `server:
@@ -43,9 +46,11 @@ circuit_breaker:
 func main() {
 	var initFlag bool
 	var initFlagShort bool
+	var genKeyClient string
 
 	flag.BoolVar(&initFlag, "init", false, "Generate default config.yaml")
 	flag.BoolVar(&initFlagShort, "i", false, "Generate default config.yaml")
+	flag.StringVar(&genKeyClient, "gen-key", "", "Generate a new API key for the specified client_id")
 	flag.Parse()
 
 	if initFlag || initFlagShort {
@@ -69,6 +74,18 @@ func main() {
 
 	if len(cfg.Destinations) == 0 {
 		log.Fatalf("No destinations configured in %s", cfgPath)
+	}
+
+	if genKeyClient != "" {
+		if !cfg.Auth.Enabled || cfg.Auth.MasterKey == "" {
+			log.Fatalf("Cannot generate key: auth is not enabled or master_key is empty in config.yaml")
+		}
+		key, err := auth.GenerateKey(genKeyClient, cfg.Auth.MasterKey)
+		if err != nil {
+			log.Fatalf("Failed to generate API key: %v", err)
+		}
+		fmt.Printf("Generated API Key for '%s':\n%s\n", genKeyClient, key)
+		return
 	}
 
 	ollamaProxy, reloadableTransport := proxy.NewOllamaProxy(cfg)
@@ -99,6 +116,34 @@ func main() {
 	// Since the user specified "only Ollama traffic will hit this",
 	// we just handle all requests with the proxy.
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.Auth.Enabled {
+			authHeader := r.Header.Get("Authorization")
+			apiKey := ""
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				apiKey = strings.TrimPrefix(authHeader, "Bearer ")
+			} else {
+				apiKey = r.Header.Get("x-api-key")
+			}
+
+			if apiKey == "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error": {"message": "Missing API Key", "type": "invalid_request_error"}}`))
+				return
+			}
+
+			clientID, err := auth.ValidateKey(apiKey, cfg.Auth.MasterKey)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error": {"message": "Invalid API Key", "type": "invalid_request_error"}}`))
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), auth.ClientIDKey{}, clientID)
+			r = r.WithContext(ctx)
+		}
+
 		log.Printf("Received request for: %s", r.URL.Path)
 		ollamaProxy.ServeHTTP(w, r)
 	})
