@@ -478,37 +478,6 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				log.Printf("[Proxy Error] Failed to marshal updated payload via adapter: %v", encodeErr)
 			}
 
-			if node.protocol == "anthropic" {
-				if node.apiKey != "" {
-					attemptReq.Header.Set("x-api-key", node.apiKey)
-				}
-				attemptReq.Header.Set("anthropic-version", "2023-06-01")
-				attemptReq.URL.Path = "/v1/messages"
-			} else if node.protocol == "vertexai" {
-				if node.apiKey != "" {
-					// Use API Key if provided (e.g., for Google AI Studio or API Key-enabled Vertex AI)
-					attemptReq.Header.Set("x-goog-api-key", node.apiKey)
-				} else if t.tokenSource != nil {
-					// Fallback to ADC
-					if tok, err := t.tokenSource.Token(); err == nil {
-						attemptReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-					}
-				}
-				attemptReq.URL.Path = node.url.Path
-				if clonedReq.Stream {
-					attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":streamGenerateContent"
-					attemptReq.URL.RawQuery = "alt=sse"
-				} else {
-					attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":generateContent"
-				}
-			} else if node.protocol == "openai" {
-				if node.apiKey != "" {
-					attemptReq.Header.Set("Authorization", "Bearer "+node.apiKey)
-				}
-				attemptReq.Header.Set("Content-Type", "application/json")
-				attemptReq.URL.Path = "/v1/chat/completions"
-			}
-
 		} else if bodyBytes != nil && node.targetModel != "" {
 			var payload map[string]interface{}
 			if err := json.Unmarshal(bodyBytes, &payload); err == nil {
@@ -541,21 +510,42 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				} else {
 					log.Printf("[Proxy Error] Failed to marshal Vertex embedding request: %v", err)
 				}
+			}
+		}
 
-				if node.apiKey != "" {
-					attemptReq.Header.Set("x-goog-api-key", node.apiKey)
-				} else if t.tokenSource != nil {
-					if tok, err := t.tokenSource.Token(); err == nil {
-						attemptReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-					}
+		// Apply target node headers and path rewrites (must be done regardless of payload parsing success)
+		if node.protocol == "anthropic" {
+			if node.apiKey != "" {
+				attemptReq.Header.Set("x-api-key", node.apiKey)
+			}
+			attemptReq.Header.Set("anthropic-version", "2023-06-01")
+			if !isEmbedding {
+				attemptReq.URL.Path = "/v1/messages"
+			}
+		} else if node.protocol == "vertexai" {
+			if node.apiKey != "" {
+				attemptReq.Header.Set("x-goog-api-key", node.apiKey)
+			} else if t.tokenSource != nil {
+				if tok, err := t.tokenSource.Token(); err == nil {
+					attemptReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 				}
-				attemptReq.URL.Path = node.url.Path + "/publishers/google/models/" + node.targetModel + ":predict"
-			} else if node.protocol == "openai" {
-				if node.apiKey != "" {
-					attemptReq.Header.Set("Authorization", "Bearer "+node.apiKey)
-				}
-				attemptReq.Header.Set("Content-Type", "application/json")
-				// Keep req.URL.Path (e.g., /v1/embeddings)
+			}
+			attemptReq.URL.Path = node.url.Path
+			if isEmbedding {
+				attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":predict"
+			} else if req.URL.RawQuery == "alt=sse" || req.Header.Get("Accept") == "text/event-stream" || (universalReq != nil && universalReq.Stream) {
+				attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":streamGenerateContent"
+				attemptReq.URL.RawQuery = "alt=sse"
+			} else {
+				attemptReq.URL.Path += "/publishers/google/models/" + node.targetModel + ":generateContent"
+			}
+		} else if node.protocol == "openai" {
+			if node.apiKey != "" {
+				attemptReq.Header.Set("Authorization", "Bearer "+node.apiKey)
+			}
+			attemptReq.Header.Set("Content-Type", "application/json")
+			if !isEmbedding {
+				attemptReq.URL.Path = "/v1/chat/completions"
 			}
 		}
 
