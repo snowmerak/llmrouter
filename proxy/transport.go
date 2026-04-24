@@ -48,7 +48,8 @@ type destinationNode struct {
 	isAlive        atomic.Bool
 	targetModel    string
 	tags           []string
-	breaker        *gobreaker.CircuitBreaker
+	breaker        atomic.Pointer[gobreaker.CircuitBreaker]
+	cbSettings     gobreaker.Settings
 	contextLength  int
 	capabilities   []string
 	authRequired   bool
@@ -191,7 +192,6 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 
 		node := &destinationNode{
 			url:           u,
-			breaker:       gobreaker.NewCircuitBreaker(cbSettings),
 			weight:        w,
 			tags:          dest.Tags,
 			targetModel:   dest.TargetModel,
@@ -200,7 +200,9 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 			contextLength: dest.ContextLength,
 			capabilities:  dest.Capabilities,
 			authRequired:  authReq,
+			cbSettings:    cbSettings,
 		}
+		node.breaker.Store(gobreaker.NewCircuitBreaker(cbSettings))
 		// Default to true so we don't drop requests before first ping returns
 		node.isAlive.Store(true)
 
@@ -576,7 +578,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		attemptReq.Host = node.url.Host
 
 		// Use Circuit Breaker Execute
-		res, err := node.breaker.Execute(func() (interface{}, error) {
+		res, err := node.breaker.Load().Execute(func() (interface{}, error) {
 			node.activeRequests.Add(1)
 			metrics.ActiveRequests.WithLabelValues(node.url.Host).Inc()
 
@@ -966,7 +968,8 @@ func pingNode(ctx context.Context, node *destinationNode, cfg config.HealthCheck
 	if wasAlive != aliveNow {
 		node.isAlive.Store(aliveNow)
 		if aliveNow {
-			log.Printf("[Ping] Node %s is alive again", node.url.Host)
+			log.Printf("[Ping] Node %s is alive again, resetting circuit breaker", node.url.Host)
+			node.breaker.Store(gobreaker.NewCircuitBreaker(node.cbSettings))
 		} else {
 			log.Printf("[Ping] Node %s marked as dead", node.url.Host)
 		}
