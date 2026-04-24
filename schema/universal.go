@@ -33,8 +33,8 @@ type ChatRequest struct {
 
 // ChatResponse is the universal format for a full chat completion response.
 type ChatResponse struct {
-	ID      string   `json:"id,omitempty"`
-	Model   string   `json:"model,omitempty"`
+	ID      string   `json:"id"`
+	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
 }
 
@@ -47,8 +47,8 @@ type Choice struct {
 
 // ChatStreamChunk is the universal format for a streaming chunk.
 type ChatStreamChunk struct {
-	ID      string         `json:"id,omitempty"`
-	Model   string         `json:"model,omitempty"`
+	ID      string         `json:"id"`
+	Model   string         `json:"model"`
 	Choices []StreamChoice `json:"choices"`
 }
 

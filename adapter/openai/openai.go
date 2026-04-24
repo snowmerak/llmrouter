@@ -58,6 +58,11 @@ func ParseStreamChunk(line []byte) (*schema.ChatStreamChunk, error) {
 		return nil, nil
 	}
 	
+	// Strict parsers (like Zod in VS Code extensions) crash if 'id' is missing or empty.
+	if chunk.ID == "" {
+		chunk.ID = "chatcmpl-router-stream"
+	}
+
 	return &chunk, nil
 }
 
