@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"hash/fnv"
 	"io"
 	"log"
@@ -146,7 +147,17 @@ func NewMultiTransport(ctx context.Context, cfg *config.Config, baseTransport ht
 			Interval:    time.Duration(cfg.CircuitBreaker.IntervalSecs) * time.Second,
 			Timeout:     time.Duration(cfg.CircuitBreaker.TimeoutSecs) * time.Second,
 			ReadyToTrip: func(counts gobreaker.Counts) bool {
-				return counts.ConsecutiveFailures >= 1
+				return counts.ConsecutiveFailures >= cfg.CircuitBreaker.MaxRequests
+			},
+			IsSuccessful: func(err error) bool {
+				if err == nil {
+					return true
+				}
+				// If the client aborted the connection (e.g. stopped generation), it's not a backend failure.
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return true
+				}
+				return false
 			},
 			OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
 				log.Printf("[CircuitBreaker] %s transitioned from %s to %s", name, from.String(), to.String())
@@ -370,12 +381,12 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					}
 				}
 			}
-			
+
 			if n.authRequired && clientID == "anonymous" {
 				authDeniedCount++
 				continue
 			}
-			
+
 			remainingNodes = append(remainingNodes, n)
 		}
 	}
@@ -389,10 +400,10 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if isOllamaRoute || requiredTag != "" {
 			return make502Response(), nil
 		}
-		
+
 		remainingNodes = make([]*destinationNode, len(t.destinations))
 		copy(remainingNodes, t.destinations)
-		
+
 		var fallbackFiltered []*destinationNode
 		for _, n := range remainingNodes {
 			if n.authRequired && clientID == "anonymous" {
@@ -661,7 +672,7 @@ func (t *MultiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 							parser:        parser,
 							formatter:     formatter,
 						}
-						
+
 						// Overwrite headers to match frontend protocol
 						resp.Header.Del("Content-Length")
 						if frontendProtocol == "ollama" {
